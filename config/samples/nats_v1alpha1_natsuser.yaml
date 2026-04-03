@@ -4,6 +4,17 @@ metadata:
   labels:
     app.kubernetes.io/name: natsoperatorexperiment
     app.kubernetes.io/managed-by: kustomize
-  name: natsuser-sample
+  name: app-user
 spec:
-  # TODO(user): Add fields here
+  accountRef:
+    name: app-account
+  permissions:
+    publish:
+      allow:
+        - "events.>"
+        - "commands.>"
+      deny:
+        - "admin.>"
+    subscribe:
+      allow:
+        - "responses.>"

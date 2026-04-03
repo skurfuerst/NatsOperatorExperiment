@@ -4,6 +4,17 @@ metadata:
   labels:
     app.kubernetes.io/name: natsoperatorexperiment
     app.kubernetes.io/managed-by: kustomize
-  name: natsaccount-sample
+  name: app-account
 spec:
-  # TODO(user): Add fields here
+  clusterRef:
+    name: main
+  allowedUserNamespaces:
+    - "^team-.*$"
+  jetstream:
+    maxMemory: "512Mi"
+    maxFile: "1Gi"
+    maxStreams: 10
+    maxConsumers: 100
+  limits:
+    maxConnections: 500
+    maxPayload: "1Mi"

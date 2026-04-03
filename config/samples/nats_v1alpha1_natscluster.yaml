@@ -4,6 +4,4 @@ metadata:
   labels:
     app.kubernetes.io/name: natsoperatorexperiment
     app.kubernetes.io/managed-by: kustomize
-  name: natscluster-sample
-spec:
-  # TODO(user): Add fields here
+  name: main
