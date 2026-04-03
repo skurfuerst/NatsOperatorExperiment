@@ -22,6 +22,7 @@ import (
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/meta"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
@@ -57,8 +58,7 @@ var _ = Describe("NatsCluster Controller", func() {
 	}
 
 	Context("NatsCluster alone", func() {
-		It("should create an empty ConfigMap", func() {
-			// Create NatsCluster
+		It("should create an empty ConfigMap with Ready condition", func() {
 			cluster := &natsv1alpha1.NatsCluster{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      clusterName,
@@ -74,11 +74,10 @@ var _ = Describe("NatsCluster Controller", func() {
 			Expect(k8sClient.Get(ctx, types.NamespacedName{
 				Name: configMapName, Namespace: clusterNs,
 			}, cm)).To(Succeed())
-
 			Expect(cm.Data).To(HaveKey("auth.conf"))
 			Expect(cm.Data["auth.conf"]).To(ContainSubstring("accounts {"))
 
-			// Verify status
+			// Verify status and Ready condition
 			Expect(k8sClient.Get(ctx, types.NamespacedName{
 				Name: clusterName, Namespace: clusterNs,
 			}, cluster)).To(Succeed())
@@ -86,13 +85,18 @@ var _ = Describe("NatsCluster Controller", func() {
 			Expect(cluster.Status.UserCount).To(Equal(0))
 			Expect(cluster.Status.LastConfigHash).NotTo(BeEmpty())
 
+			readyCond := meta.FindStatusCondition(cluster.Status.Conditions, natsv1alpha1.ConditionReady)
+			Expect(readyCond).NotTo(BeNil())
+			Expect(readyCond.Status).To(Equal(metav1.ConditionTrue))
+			Expect(readyCond.Reason).To(Equal(natsv1alpha1.ReasonReconciled))
+
 			// Cleanup
 			Expect(k8sClient.Delete(ctx, cluster)).To(Succeed())
 		})
 	})
 
 	Context("NatsCluster with NatsAccount", func() {
-		It("should include account config in ConfigMap", func() {
+		It("should include account config with Ready conditions and account status", func() {
 			cluster := &natsv1alpha1.NatsCluster{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      clusterName,
@@ -142,11 +146,20 @@ var _ = Describe("NatsCluster Controller", func() {
 			Expect(conf).To(ContainSubstring("max_streams: 10"))
 			Expect(conf).To(ContainSubstring("max_connections: 500"))
 
-			// Verify status
+			// Verify cluster status
 			Expect(k8sClient.Get(ctx, types.NamespacedName{
 				Name: clusterName, Namespace: clusterNs,
 			}, cluster)).To(Succeed())
 			Expect(cluster.Status.AccountCount).To(Equal(1))
+
+			// Verify account Ready condition and userCount
+			Expect(k8sClient.Get(ctx, types.NamespacedName{
+				Name: accountName, Namespace: clusterNs,
+			}, account)).To(Succeed())
+			acctReady := meta.FindStatusCondition(account.Status.Conditions, natsv1alpha1.ConditionReady)
+			Expect(acctReady).NotTo(BeNil())
+			Expect(acctReady.Status).To(Equal(metav1.ConditionTrue))
+			Expect(account.Status.UserCount).To(Equal(0))
 
 			// Cleanup
 			Expect(k8sClient.Delete(ctx, account)).To(Succeed())
@@ -155,7 +168,7 @@ var _ = Describe("NatsCluster Controller", func() {
 	})
 
 	Context("NatsCluster with NatsAccount and NatsUser (same namespace)", func() {
-		It("should create NKey secret and include user in config", func() {
+		It("should create NKey secret, include user in config, set conditions", func() {
 			cluster := &natsv1alpha1.NatsCluster{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      clusterName,
@@ -198,7 +211,7 @@ var _ = Describe("NatsCluster Controller", func() {
 
 			doReconcile()
 
-			// Verify NKey Secret was created
+			// Verify NKey Secret
 			secret := &corev1.Secret{}
 			Expect(k8sClient.Get(ctx, types.NamespacedName{
 				Name: userName + "-nats-nkey", Namespace: clusterNs,
@@ -218,13 +231,23 @@ var _ = Describe("NatsCluster Controller", func() {
 			Expect(conf).To(ContainSubstring(`"events.>"`))
 			Expect(conf).To(ContainSubstring(`"responses.>"`))
 
-			// Verify user status updated
+			// Verify user status and condition
 			Expect(k8sClient.Get(ctx, types.NamespacedName{
 				Name: userName, Namespace: clusterNs,
 			}, user)).To(Succeed())
 			Expect(user.Status.NKeyPublicKey).To(Equal(publicKey))
 			Expect(user.Status.SecretRef).NotTo(BeNil())
 			Expect(user.Status.SecretRef.Name).To(Equal(userName + "-nats-nkey"))
+
+			userReady := meta.FindStatusCondition(user.Status.Conditions, natsv1alpha1.ConditionReady)
+			Expect(userReady).NotTo(BeNil())
+			Expect(userReady.Status).To(Equal(metav1.ConditionTrue))
+
+			// Verify account userCount
+			Expect(k8sClient.Get(ctx, types.NamespacedName{
+				Name: accountName, Namespace: clusterNs,
+			}, account)).To(Succeed())
+			Expect(account.Status.UserCount).To(Equal(1))
 
 			// Verify cluster status
 			Expect(k8sClient.Get(ctx, types.NamespacedName{
@@ -242,11 +265,10 @@ var _ = Describe("NatsCluster Controller", func() {
 
 	Context("Cross-namespace NatsUser", func() {
 		It("should allow user from namespace matching allowedUserNamespaces regex", func() {
-			// Create namespace for cross-ns user
 			teamNs := &corev1.Namespace{
 				ObjectMeta: metav1.ObjectMeta{Name: "team-alpha"},
 			}
-			Expect(k8sClient.Create(ctx, teamNs)).To(Succeed())
+			Expect(k8sClient.Create(ctx, teamNs)).To(Or(Succeed(), MatchError(ContainSubstring("already exists"))))
 
 			cluster := &natsv1alpha1.NatsCluster{
 				ObjectMeta: metav1.ObjectMeta{
@@ -298,11 +320,13 @@ var _ = Describe("NatsCluster Controller", func() {
 			publicKey := string(secret.Data["nkey-public"])
 			Expect(cm.Data["auth.conf"]).To(ContainSubstring(publicKey))
 
-			// Verify cluster status
+			// Verify user Ready condition
 			Expect(k8sClient.Get(ctx, types.NamespacedName{
-				Name: clusterName, Namespace: clusterNs,
-			}, cluster)).To(Succeed())
-			Expect(cluster.Status.UserCount).To(Equal(1))
+				Name: "cross-ns-user", Namespace: "team-alpha",
+			}, crossNsUser)).To(Succeed())
+			userReady := meta.FindStatusCondition(crossNsUser.Status.Conditions, natsv1alpha1.ConditionReady)
+			Expect(userReady).NotTo(BeNil())
+			Expect(userReady.Status).To(Equal(metav1.ConditionTrue))
 
 			// Cleanup
 			Expect(k8sClient.Delete(ctx, crossNsUser)).To(Succeed())
@@ -310,12 +334,11 @@ var _ = Describe("NatsCluster Controller", func() {
 			Expect(k8sClient.Delete(ctx, cluster)).To(Succeed())
 		})
 
-		It("should reject user from namespace not matching allowedUserNamespaces", func() {
-			// Create namespace
+		It("should reject user from namespace not matching allowedUserNamespaces with condition", func() {
 			rejectedNs := &corev1.Namespace{
 				ObjectMeta: metav1.ObjectMeta{Name: "unauthorized-ns"},
 			}
-			Expect(k8sClient.Create(ctx, rejectedNs)).To(Succeed())
+			Expect(k8sClient.Create(ctx, rejectedNs)).To(Or(Succeed(), MatchError(ContainSubstring("already exists"))))
 
 			cluster := &natsv1alpha1.NatsCluster{
 				ObjectMeta: metav1.ObjectMeta{
@@ -353,19 +376,21 @@ var _ = Describe("NatsCluster Controller", func() {
 
 			doReconcile()
 
-			// Verify no NKey secret was created
+			// Verify no NKey secret
 			secret := &corev1.Secret{}
 			err := k8sClient.Get(ctx, types.NamespacedName{
 				Name: "rejected-user-nats-nkey", Namespace: "unauthorized-ns",
 			}, secret)
 			Expect(err).To(HaveOccurred())
 
-			// Verify config does NOT include rejected user
-			cm := &corev1.ConfigMap{}
+			// Verify user has NamespaceNotAllowed condition
 			Expect(k8sClient.Get(ctx, types.NamespacedName{
-				Name: configMapName, Namespace: clusterNs,
-			}, cm)).To(Succeed())
-			Expect(cm.Data["auth.conf"]).NotTo(ContainSubstring("rejected-user"))
+				Name: "rejected-user", Namespace: "unauthorized-ns",
+			}, rejectedUser)).To(Succeed())
+			userReady := meta.FindStatusCondition(rejectedUser.Status.Conditions, natsv1alpha1.ConditionReady)
+			Expect(userReady).NotTo(BeNil())
+			Expect(userReady.Status).To(Equal(metav1.ConditionFalse))
+			Expect(userReady.Reason).To(Equal(natsv1alpha1.ReasonNamespaceNotAllowed))
 
 			// Verify cluster status shows 0 users
 			Expect(k8sClient.Get(ctx, types.NamespacedName{
@@ -482,7 +507,6 @@ var _ = Describe("NatsCluster Controller", func() {
 
 			doReconcile()
 
-			// Get the secret after first reconcile
 			secret1 := &corev1.Secret{}
 			Expect(k8sClient.Get(ctx, types.NamespacedName{
 				Name: userName + "-nats-nkey", Namespace: clusterNs,
@@ -493,7 +517,6 @@ var _ = Describe("NatsCluster Controller", func() {
 			// Reconcile again
 			doReconcile()
 
-			// Verify secret is unchanged
 			secret2 := &corev1.Secret{}
 			Expect(k8sClient.Get(ctx, types.NamespacedName{
 				Name: userName + "-nats-nkey", Namespace: clusterNs,
@@ -503,6 +526,213 @@ var _ = Describe("NatsCluster Controller", func() {
 
 			// Cleanup
 			Expect(k8sClient.Delete(ctx, user)).To(Succeed())
+			Expect(k8sClient.Delete(ctx, account)).To(Succeed())
+			Expect(k8sClient.Delete(ctx, cluster)).To(Succeed())
+		})
+	})
+
+	Context("Delete reconciliation", func() {
+		It("should regenerate config when account is deleted", func() {
+			cluster := &natsv1alpha1.NatsCluster{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      clusterName,
+					Namespace: clusterNs,
+				},
+			}
+			Expect(k8sClient.Create(ctx, cluster)).To(Succeed())
+
+			account1 := &natsv1alpha1.NatsAccount{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "account-1",
+					Namespace: clusterNs,
+				},
+				Spec: natsv1alpha1.NatsAccountSpec{
+					ClusterRef: natsv1alpha1.LocalObjectReference{Name: clusterName},
+				},
+			}
+			account2 := &natsv1alpha1.NatsAccount{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "account-2",
+					Namespace: clusterNs,
+				},
+				Spec: natsv1alpha1.NatsAccountSpec{
+					ClusterRef: natsv1alpha1.LocalObjectReference{Name: clusterName},
+				},
+			}
+			Expect(k8sClient.Create(ctx, account1)).To(Succeed())
+			Expect(k8sClient.Create(ctx, account2)).To(Succeed())
+
+			doReconcile()
+
+			// Verify both accounts in config
+			cm := &corev1.ConfigMap{}
+			Expect(k8sClient.Get(ctx, types.NamespacedName{
+				Name: configMapName, Namespace: clusterNs,
+			}, cm)).To(Succeed())
+			Expect(cm.Data["auth.conf"]).To(ContainSubstring("account-1"))
+			Expect(cm.Data["auth.conf"]).To(ContainSubstring("account-2"))
+
+			Expect(k8sClient.Get(ctx, types.NamespacedName{
+				Name: clusterName, Namespace: clusterNs,
+			}, cluster)).To(Succeed())
+			Expect(cluster.Status.AccountCount).To(Equal(2))
+
+			// Delete account-1
+			Expect(k8sClient.Delete(ctx, account1)).To(Succeed())
+
+			doReconcile()
+
+			// Verify config only has account-2
+			Expect(k8sClient.Get(ctx, types.NamespacedName{
+				Name: configMapName, Namespace: clusterNs,
+			}, cm)).To(Succeed())
+			Expect(cm.Data["auth.conf"]).NotTo(ContainSubstring("account-1"))
+			Expect(cm.Data["auth.conf"]).To(ContainSubstring("account-2"))
+
+			// Verify cluster status updated
+			Expect(k8sClient.Get(ctx, types.NamespacedName{
+				Name: clusterName, Namespace: clusterNs,
+			}, cluster)).To(Succeed())
+			Expect(cluster.Status.AccountCount).To(Equal(1))
+
+			// Cleanup
+			Expect(k8sClient.Delete(ctx, account2)).To(Succeed())
+			Expect(k8sClient.Delete(ctx, cluster)).To(Succeed())
+		})
+
+		It("should regenerate config when user is deleted", func() {
+			cluster := &natsv1alpha1.NatsCluster{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      clusterName,
+					Namespace: clusterNs,
+				},
+			}
+			Expect(k8sClient.Create(ctx, cluster)).To(Succeed())
+
+			account := &natsv1alpha1.NatsAccount{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      accountName,
+					Namespace: clusterNs,
+				},
+				Spec: natsv1alpha1.NatsAccountSpec{
+					ClusterRef: natsv1alpha1.LocalObjectReference{Name: clusterName},
+				},
+			}
+			Expect(k8sClient.Create(ctx, account)).To(Succeed())
+
+			user1 := &natsv1alpha1.NatsUser{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "user-1",
+					Namespace: clusterNs,
+				},
+				Spec: natsv1alpha1.NatsUserSpec{
+					AccountRef: natsv1alpha1.NamespacedObjectReference{Name: accountName},
+				},
+			}
+			user2 := &natsv1alpha1.NatsUser{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "user-2",
+					Namespace: clusterNs,
+				},
+				Spec: natsv1alpha1.NatsUserSpec{
+					AccountRef: natsv1alpha1.NamespacedObjectReference{Name: accountName},
+				},
+			}
+			Expect(k8sClient.Create(ctx, user1)).To(Succeed())
+			Expect(k8sClient.Create(ctx, user2)).To(Succeed())
+
+			doReconcile()
+
+			// Get user-1's public key
+			secret1 := &corev1.Secret{}
+			Expect(k8sClient.Get(ctx, types.NamespacedName{
+				Name: "user-1-nats-nkey", Namespace: clusterNs,
+			}, secret1)).To(Succeed())
+			user1Key := string(secret1.Data["nkey-public"])
+
+			// Verify both users in config
+			cm := &corev1.ConfigMap{}
+			Expect(k8sClient.Get(ctx, types.NamespacedName{
+				Name: configMapName, Namespace: clusterNs,
+			}, cm)).To(Succeed())
+			Expect(cm.Data["auth.conf"]).To(ContainSubstring(user1Key))
+
+			Expect(k8sClient.Get(ctx, types.NamespacedName{
+				Name: clusterName, Namespace: clusterNs,
+			}, cluster)).To(Succeed())
+			Expect(cluster.Status.UserCount).To(Equal(2))
+
+			// Delete user-1
+			Expect(k8sClient.Delete(ctx, user1)).To(Succeed())
+
+			doReconcile()
+
+			// Verify config no longer has user-1's key
+			Expect(k8sClient.Get(ctx, types.NamespacedName{
+				Name: configMapName, Namespace: clusterNs,
+			}, cm)).To(Succeed())
+			Expect(cm.Data["auth.conf"]).NotTo(ContainSubstring(user1Key))
+
+			// Verify cluster status updated
+			Expect(k8sClient.Get(ctx, types.NamespacedName{
+				Name: clusterName, Namespace: clusterNs,
+			}, cluster)).To(Succeed())
+			Expect(cluster.Status.UserCount).To(Equal(1))
+
+			// Verify account userCount updated
+			Expect(k8sClient.Get(ctx, types.NamespacedName{
+				Name: accountName, Namespace: clusterNs,
+			}, account)).To(Succeed())
+			Expect(account.Status.UserCount).To(Equal(1))
+
+			// Cleanup
+			Expect(k8sClient.Delete(ctx, user2)).To(Succeed())
+			Expect(k8sClient.Delete(ctx, account)).To(Succeed())
+			Expect(k8sClient.Delete(ctx, cluster)).To(Succeed())
+		})
+	})
+
+	Context("Invalid regex on account", func() {
+		It("should set InvalidRegex condition on account and skip it", func() {
+			cluster := &natsv1alpha1.NatsCluster{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      clusterName,
+					Namespace: clusterNs,
+				},
+			}
+			Expect(k8sClient.Create(ctx, cluster)).To(Succeed())
+
+			account := &natsv1alpha1.NatsAccount{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      accountName,
+					Namespace: clusterNs,
+				},
+				Spec: natsv1alpha1.NatsAccountSpec{
+					ClusterRef:            natsv1alpha1.LocalObjectReference{Name: clusterName},
+					AllowedUserNamespaces: []string{"[invalid-regex"},
+				},
+			}
+			Expect(k8sClient.Create(ctx, account)).To(Succeed())
+
+			doReconcile()
+
+			// Verify account has InvalidRegex condition
+			Expect(k8sClient.Get(ctx, types.NamespacedName{
+				Name: accountName, Namespace: clusterNs,
+			}, account)).To(Succeed())
+			acctReady := meta.FindStatusCondition(account.Status.Conditions, natsv1alpha1.ConditionReady)
+			Expect(acctReady).NotTo(BeNil())
+			Expect(acctReady.Status).To(Equal(metav1.ConditionFalse))
+			Expect(acctReady.Reason).To(Equal(natsv1alpha1.ReasonInvalidRegex))
+
+			// ConfigMap should still exist but without that account
+			cm := &corev1.ConfigMap{}
+			Expect(k8sClient.Get(ctx, types.NamespacedName{
+				Name: configMapName, Namespace: clusterNs,
+			}, cm)).To(Succeed())
+			Expect(cm.Data["auth.conf"]).NotTo(ContainSubstring(accountName))
+
+			// Cleanup
 			Expect(k8sClient.Delete(ctx, account)).To(Succeed())
 			Expect(k8sClient.Delete(ctx, cluster)).To(Succeed())
 		})

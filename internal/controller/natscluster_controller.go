@@ -25,6 +25,7 @@ import (
 
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
@@ -71,6 +72,7 @@ func (r *NatsClusterReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 	// 2. List NatsAccounts in same namespace referencing this cluster
 	accountList := &natsv1alpha1.NatsAccountList{}
 	if err := r.List(ctx, accountList, client.InNamespace(cluster.Namespace)); err != nil {
+		r.setClusterCondition(ctx, cluster, metav1.ConditionFalse, natsv1alpha1.ReasonReconcileError, err.Error())
 		return ctrl.Result{}, err
 	}
 
@@ -90,23 +92,27 @@ func (r *NatsClusterReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 	var accountsWithUsers []natsconfig.AccountWithUsers
 	totalUsers := 0
 
-	for _, acct := range matchingAccounts {
+	for i := range matchingAccounts {
+		acct := &matchingAccounts[i]
+
 		// Compile allowed namespace regexes
 		regexes, err := compileNamespaceRegexes(acct.Spec.AllowedUserNamespaces)
 		if err != nil {
 			log.Error(err, "failed to compile allowedUserNamespaces regex", "account", acct.Name)
+			r.setAccountCondition(ctx, acct, metav1.ConditionFalse, natsv1alpha1.ReasonInvalidRegex, err.Error())
 			continue
 		}
 
 		// List all NatsUsers across all namespaces
 		userList := &natsv1alpha1.NatsUserList{}
 		if err := r.List(ctx, userList); err != nil {
+			r.setClusterCondition(ctx, cluster, metav1.ConditionFalse, natsv1alpha1.ReasonReconcileError, err.Error())
 			return ctrl.Result{}, err
 		}
 
 		var usersWithKeys []natsconfig.UserWithPublicKey
-		for i := range userList.Items {
-			user := &userList.Items[i]
+		for j := range userList.Items {
+			user := &userList.Items[j]
 
 			// Check if this user references this account
 			accountNs := user.Spec.AccountRef.Namespace
@@ -120,6 +126,8 @@ func (r *NatsClusterReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 			// Validate user namespace against account's allowedUserNamespaces
 			if user.Namespace != acct.Namespace && !isNamespaceAllowed(user.Namespace, regexes) {
 				log.Info("user namespace not allowed", "user", user.Name, "userNamespace", user.Namespace, "account", acct.Name)
+				r.setUserCondition(ctx, user, metav1.ConditionFalse, natsv1alpha1.ReasonNamespaceNotAllowed,
+					fmt.Sprintf("namespace %q not allowed by account %q", user.Namespace, acct.Name))
 				continue
 			}
 
@@ -129,6 +137,9 @@ func (r *NatsClusterReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 				log.Error(err, "failed to ensure NKey secret", "user", user.Name)
 				return ctrl.Result{}, err
 			}
+
+			// Set user Ready condition
+			r.setUserCondition(ctx, user, metav1.ConditionTrue, natsv1alpha1.ReasonReconciled, "User reconciled successfully")
 
 			usersWithKeys = append(usersWithKeys, natsconfig.UserWithPublicKey{
 				User:      *user,
@@ -141,9 +152,13 @@ func (r *NatsClusterReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 			return usersWithKeys[i].User.Name < usersWithKeys[j].User.Name
 		})
 
+		// Update account status
+		acct.Status.UserCount = len(usersWithKeys)
+		r.setAccountCondition(ctx, acct, metav1.ConditionTrue, natsv1alpha1.ReasonReconciled, "Account reconciled successfully")
+
 		totalUsers += len(usersWithKeys)
 		accountsWithUsers = append(accountsWithUsers, natsconfig.AccountWithUsers{
-			Account: acct,
+			Account: *acct,
 			Users:   usersWithKeys,
 		})
 	}
@@ -171,16 +186,24 @@ func (r *NatsClusterReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 		return controllerutil.SetControllerReference(cluster, cm, r.Scheme)
 	})
 	if err != nil {
+		r.setClusterCondition(ctx, cluster, metav1.ConditionFalse, natsv1alpha1.ReasonReconcileError, err.Error())
 		return ctrl.Result{}, err
 	}
 	if result != controllerutil.OperationResultNone {
 		log.Info("ConfigMap updated", "name", configMapName, "operation", result)
 	}
 
-	// 7. Update status
+	// 7. Update cluster status
 	cluster.Status.AccountCount = len(matchingAccounts)
 	cluster.Status.UserCount = totalUsers
 	cluster.Status.LastConfigHash = hash
+	meta.SetStatusCondition(&cluster.Status.Conditions, metav1.Condition{
+		Type:               natsv1alpha1.ConditionReady,
+		Status:             metav1.ConditionTrue,
+		Reason:             natsv1alpha1.ReasonReconciled,
+		Message:            fmt.Sprintf("Reconciled %d accounts, %d users", len(matchingAccounts), totalUsers),
+		ObservedGeneration: cluster.Generation,
+	})
 	if err := r.Status().Update(ctx, cluster); err != nil {
 		return ctrl.Result{}, err
 	}
@@ -249,6 +272,45 @@ func (r *NatsClusterReconciler) ensureNKeySecret(ctx context.Context, user *nats
 	}
 
 	return publicKey, nil
+}
+
+func (r *NatsClusterReconciler) setClusterCondition(ctx context.Context, cluster *natsv1alpha1.NatsCluster, status metav1.ConditionStatus, reason, message string) {
+	meta.SetStatusCondition(&cluster.Status.Conditions, metav1.Condition{
+		Type:               natsv1alpha1.ConditionReady,
+		Status:             status,
+		Reason:             reason,
+		Message:            message,
+		ObservedGeneration: cluster.Generation,
+	})
+	if err := r.Status().Update(ctx, cluster); err != nil {
+		logf.FromContext(ctx).Error(err, "failed to update cluster condition")
+	}
+}
+
+func (r *NatsClusterReconciler) setAccountCondition(ctx context.Context, account *natsv1alpha1.NatsAccount, status metav1.ConditionStatus, reason, message string) {
+	meta.SetStatusCondition(&account.Status.Conditions, metav1.Condition{
+		Type:               natsv1alpha1.ConditionReady,
+		Status:             status,
+		Reason:             reason,
+		Message:            message,
+		ObservedGeneration: account.Generation,
+	})
+	if err := r.Status().Update(ctx, account); err != nil {
+		logf.FromContext(ctx).Error(err, "failed to update account condition")
+	}
+}
+
+func (r *NatsClusterReconciler) setUserCondition(ctx context.Context, user *natsv1alpha1.NatsUser, status metav1.ConditionStatus, reason, message string) {
+	meta.SetStatusCondition(&user.Status.Conditions, metav1.Condition{
+		Type:               natsv1alpha1.ConditionReady,
+		Status:             status,
+		Reason:             reason,
+		Message:            message,
+		ObservedGeneration: user.Generation,
+	})
+	if err := r.Status().Update(ctx, user); err != nil {
+		logf.FromContext(ctx).Error(err, "failed to update user condition")
+	}
 }
 
 func compileNamespaceRegexes(patterns []string) ([]*regexp.Regexp, error) {
