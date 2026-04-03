@@ -89,7 +89,7 @@ func (r *NatsClusterReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 	})
 
 	// 3. For each account, find users and ensure NKey secrets
-	var accountsWithUsers []natsconfig.AccountWithUsers
+	accountsWithUsers := make([]natsconfig.AccountWithUsers, 0, len(matchingAccounts))
 	totalUsers := 0
 
 	for i := range matchingAccounts {

@@ -44,7 +44,7 @@ func runGenerate(cmd *cobra.Command, args []string) error {
 
 func buildConfigForCluster(cluster *natsv1alpha1.NatsCluster, res *loadedResources) *natsconfig.NatsConfig {
 	// Find accounts referencing this cluster
-	var accountsWithUsers []natsconfig.AccountWithUsers
+	accountsWithUsers := make([]natsconfig.AccountWithUsers, 0, len(res.Accounts))
 
 	for _, acct := range res.Accounts {
 		if acct.Spec.ClusterRef.Name != cluster.Name {

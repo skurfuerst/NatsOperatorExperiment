@@ -98,7 +98,7 @@ func loadFile(path string, decoder runtime.Decoder, res *loadedResources) error 
 
 func splitYAMLDocuments(data []byte) [][]byte {
 	var docs [][]byte
-	var current []byte
+	current := make([]byte, 0, len(data))
 
 	for _, line := range splitLines(data) {
 		if string(line) == "---" {

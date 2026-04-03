@@ -12,9 +12,10 @@ import (
 var validateCmd = &cobra.Command{
 	Use:   "validate [paths...]",
 	Short: "Validate NATS operator CRD manifests",
-	Long:  "Checks NatsCluster, NatsAccount, and NatsUser YAML files for errors like missing refs, invalid regexes, and namespace violations.",
-	Args:  cobra.MinimumNArgs(1),
-	RunE:  runValidate,
+	Long: `Checks NatsCluster, NatsAccount, and NatsUser YAML files for errors
+like missing refs, invalid regexes, and namespace violations.`,
+	Args: cobra.MinimumNArgs(1),
+	RunE: runValidate,
 }
 
 func init() {
@@ -94,7 +95,9 @@ func runValidate(cmd *cobra.Command, args []string) error {
 				errs = append(errs, validationError{
 					Resource: "NatsUser",
 					Name:     user.Name,
-					Message:  fmt.Sprintf("cross-namespace user (ns=%q) but account %q has no allowedUserNamespaces", userNs, acct.Name),
+					Message: fmt.Sprintf(
+						"cross-namespace user (ns=%q) but account %q has no allowedUserNamespaces",
+						userNs, acct.Name),
 				})
 			} else {
 				allowed := false
@@ -120,14 +123,14 @@ func runValidate(cmd *cobra.Command, args []string) error {
 	}
 
 	if len(errs) == 0 {
-		fmt.Fprintf(cmd.OutOrStdout(), "Validation passed: %d clusters, %d accounts, %d users\n",
+		_, _ = fmt.Fprintf(cmd.OutOrStdout(), "Validation passed: %d clusters, %d accounts, %d users\n",
 			len(res.Clusters), len(res.Accounts), len(res.Users))
 		return nil
 	}
 
-	fmt.Fprintf(cmd.ErrOrStderr(), "Validation found %d error(s):\n", len(errs))
+	_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "Validation found %d error(s):\n", len(errs))
 	for _, e := range errs {
-		fmt.Fprintf(cmd.ErrOrStderr(), "  - %s\n", e)
+		_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "  - %s\n", e)
 	}
 	return fmt.Errorf("validation failed with %d error(s)", len(errs))
 }
