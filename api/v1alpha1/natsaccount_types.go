@@ -17,29 +17,108 @@ limitations under the License.
 package v1alpha1
 
 import (
+	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
-// EDIT THIS FILE!  THIS IS SCAFFOLDING FOR YOU TO OWN!
-// NOTE: json tags are required.  Any new fields you add must have json tags for the fields to be serialized.
-
 // NatsAccountSpec defines the desired state of NatsAccount.
 type NatsAccountSpec struct {
-	// INSERT ADDITIONAL SPEC FIELDS - desired state of cluster
-	// Important: Run "make" to regenerate code after modifying this file
+	// ClusterRef references the NatsCluster this account belongs to.
+	// Must be in the same namespace as this NatsAccount.
+	ClusterRef LocalObjectReference `json:"clusterRef"`
 
-	// Foo is an example field of NatsAccount. Edit natsaccount_types.go to remove/update
-	Foo string `json:"foo,omitempty"`
+	// AllowedUserNamespaces is a list of regex patterns specifying which
+	// namespaces NatsUsers can reference this account from.
+	// If empty, only users in the same namespace as this account are allowed.
+	// +optional
+	AllowedUserNamespaces []string `json:"allowedUserNamespaces,omitempty"`
+
+	// JetStream configures JetStream resource limits for this account.
+	// +optional
+	JetStream *AccountJetStream `json:"jetstream,omitempty"`
+
+	// Limits configures connection and resource limits for this account.
+	// +optional
+	Limits *AccountLimits `json:"limits,omitempty"`
+}
+
+// LocalObjectReference references a resource in the same namespace.
+type LocalObjectReference struct {
+	// Name of the referenced resource.
+	Name string `json:"name"`
+}
+
+// AccountJetStream configures JetStream limits for an account.
+// These fields mirror the NATS server account-level JetStream configuration.
+type AccountJetStream struct {
+	// MaxMemory is the maximum in-memory storage for this account (e.g. "512Mi", "1Gi").
+	// +optional
+	MaxMemory *resource.Quantity `json:"maxMemory,omitempty"`
+
+	// MaxFile is the maximum file/disk-based storage for this account (e.g. "1Gi", "10Gi").
+	// +optional
+	MaxFile *resource.Quantity `json:"maxFile,omitempty"`
+
+	// MaxStreams is the maximum number of streams allowed.
+	// +optional
+	MaxStreams *int64 `json:"maxStreams,omitempty"`
+
+	// MaxConsumers is the maximum number of consumers allowed.
+	// +optional
+	MaxConsumers *int64 `json:"maxConsumers,omitempty"`
+
+	// MaxBytesRequired requires all streams to have max_bytes set when true.
+	// +optional
+	MaxBytesRequired *bool `json:"maxBytesRequired,omitempty"`
+
+	// MemoryMaxStreamBytes is the per-stream memory storage ceiling.
+	// +optional
+	MemoryMaxStreamBytes *resource.Quantity `json:"memoryMaxStreamBytes,omitempty"`
+
+	// DiskMaxStreamBytes is the per-stream disk storage ceiling.
+	// +optional
+	DiskMaxStreamBytes *resource.Quantity `json:"diskMaxStreamBytes,omitempty"`
+
+	// MaxAckPending is the maximum number of pending ACKs per consumer.
+	// +optional
+	MaxAckPending *int64 `json:"maxAckPending,omitempty"`
+}
+
+// AccountLimits configures connection and resource limits for an account.
+// These fields mirror the NATS server account-level limits configuration.
+type AccountLimits struct {
+	// MaxConnections is the maximum number of concurrent client connections.
+	// +optional
+	MaxConnections *int64 `json:"maxConnections,omitempty"`
+
+	// MaxSubscriptions is the maximum number of subscriptions per connection.
+	// +optional
+	MaxSubscriptions *int64 `json:"maxSubscriptions,omitempty"`
+
+	// MaxPayload is the maximum message payload size (e.g. "1Mi", "64Mi").
+	// +optional
+	MaxPayload *resource.Quantity `json:"maxPayload,omitempty"`
+
+	// MaxLeafnodes is the maximum number of leaf node connections.
+	// +optional
+	MaxLeafnodes *int64 `json:"maxLeafnodes,omitempty"`
 }
 
 // NatsAccountStatus defines the observed state of NatsAccount.
 type NatsAccountStatus struct {
-	// INSERT ADDITIONAL STATUS FIELD - define observed state of cluster
-	// Important: Run "make" to regenerate code after modifying this file
+	// Conditions represent the latest available observations of the account's state.
+	// +optional
+	Conditions []metav1.Condition `json:"conditions,omitempty"`
+
+	// UserCount is the number of NatsUsers in this account.
+	// +optional
+	UserCount int `json:"userCount,omitempty"`
 }
 
 // +kubebuilder:object:root=true
 // +kubebuilder:subresource:status
+// +kubebuilder:printcolumn:name="Cluster",type=string,JSONPath=`.spec.clusterRef.name`
+// +kubebuilder:printcolumn:name="Users",type=integer,JSONPath=`.status.userCount`
 
 // NatsAccount is the Schema for the natsaccounts API.
 type NatsAccount struct {

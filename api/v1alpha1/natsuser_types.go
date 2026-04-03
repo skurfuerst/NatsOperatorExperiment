@@ -20,26 +20,75 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
-// EDIT THIS FILE!  THIS IS SCAFFOLDING FOR YOU TO OWN!
-// NOTE: json tags are required.  Any new fields you add must have json tags for the fields to be serialized.
-
 // NatsUserSpec defines the desired state of NatsUser.
 type NatsUserSpec struct {
-	// INSERT ADDITIONAL SPEC FIELDS - desired state of cluster
-	// Important: Run "make" to regenerate code after modifying this file
+	// AccountRef references the NatsAccount this user belongs to.
+	// Can be cross-namespace if the NatsAccount's allowedUserNamespaces permits it.
+	AccountRef NamespacedObjectReference `json:"accountRef"`
 
-	// Foo is an example field of NatsUser. Edit natsuser_types.go to remove/update
-	Foo string `json:"foo,omitempty"`
+	// Permissions defines publish/subscribe permissions for this user.
+	// +optional
+	Permissions *Permissions `json:"permissions,omitempty"`
+}
+
+// NamespacedObjectReference references a resource, optionally in another namespace.
+type NamespacedObjectReference struct {
+	// Name of the referenced resource.
+	Name string `json:"name"`
+
+	// Namespace of the referenced resource.
+	// If empty, defaults to the referring resource's namespace.
+	// +optional
+	Namespace string `json:"namespace,omitempty"`
+}
+
+// Permissions defines NATS publish/subscribe permissions.
+type Permissions struct {
+	// Publish defines publish permissions.
+	// +optional
+	Publish *PermissionRule `json:"publish,omitempty"`
+
+	// Subscribe defines subscribe permissions.
+	// +optional
+	Subscribe *PermissionRule `json:"subscribe,omitempty"`
+}
+
+// PermissionRule defines allowed and denied subjects.
+type PermissionRule struct {
+	// Allow is a list of subjects to allow.
+	// +optional
+	Allow []string `json:"allow,omitempty"`
+
+	// Deny is a list of subjects to deny.
+	// +optional
+	Deny []string `json:"deny,omitempty"`
 }
 
 // NatsUserStatus defines the observed state of NatsUser.
 type NatsUserStatus struct {
-	// INSERT ADDITIONAL STATUS FIELD - define observed state of cluster
-	// Important: Run "make" to regenerate code after modifying this file
+	// Conditions represent the latest available observations of the user's state.
+	// +optional
+	Conditions []metav1.Condition `json:"conditions,omitempty"`
+
+	// NKeyPublicKey is the user's NKey public key (starts with 'U').
+	// +optional
+	NKeyPublicKey string `json:"nkeyPublicKey,omitempty"`
+
+	// SecretRef references the Secret containing the user's NKey seed and public key.
+	// +optional
+	SecretRef *SecretReference `json:"secretRef,omitempty"`
+}
+
+// SecretReference references a Secret by name in the same namespace.
+type SecretReference struct {
+	// Name of the Secret.
+	Name string `json:"name"`
 }
 
 // +kubebuilder:object:root=true
 // +kubebuilder:subresource:status
+// +kubebuilder:printcolumn:name="Account",type=string,JSONPath=`.spec.accountRef.name`
+// +kubebuilder:printcolumn:name="PublicKey",type=string,JSONPath=`.status.nkeyPublicKey`
 
 // NatsUser is the Schema for the natsusers API.
 type NatsUser struct {

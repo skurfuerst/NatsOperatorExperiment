@@ -20,26 +20,33 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
-// EDIT THIS FILE!  THIS IS SCAFFOLDING FOR YOU TO OWN!
-// NOTE: json tags are required.  Any new fields you add must have json tags for the fields to be serialized.
-
 // NatsClusterSpec defines the desired state of NatsCluster.
 type NatsClusterSpec struct {
-	// INSERT ADDITIONAL SPEC FIELDS - desired state of cluster
-	// Important: Run "make" to regenerate code after modifying this file
-
-	// Foo is an example field of NatsCluster. Edit natscluster_types.go to remove/update
-	Foo string `json:"foo,omitempty"`
 }
 
 // NatsClusterStatus defines the observed state of NatsCluster.
 type NatsClusterStatus struct {
-	// INSERT ADDITIONAL STATUS FIELD - define observed state of cluster
-	// Important: Run "make" to regenerate code after modifying this file
+	// Conditions represent the latest available observations of the cluster's state.
+	// +optional
+	Conditions []metav1.Condition `json:"conditions,omitempty"`
+
+	// AccountCount is the number of NatsAccounts associated with this cluster.
+	// +optional
+	AccountCount int `json:"accountCount,omitempty"`
+
+	// UserCount is the total number of NatsUsers across all accounts.
+	// +optional
+	UserCount int `json:"userCount,omitempty"`
+
+	// LastConfigHash is the SHA256 hash of the last generated NATS config.
+	// +optional
+	LastConfigHash string `json:"lastConfigHash,omitempty"`
 }
 
 // +kubebuilder:object:root=true
 // +kubebuilder:subresource:status
+// +kubebuilder:printcolumn:name="Accounts",type=integer,JSONPath=`.status.accountCount`
+// +kubebuilder:printcolumn:name="Users",type=integer,JSONPath=`.status.userCount`
 
 // NatsCluster is the Schema for the natsclusters API.
 type NatsCluster struct {
