@@ -16,7 +16,7 @@ type AccountConfig struct {
 type JetStreamConfig struct {
 	MaxMemory            string
 	MaxFile              string
-	MaxStreams            *int64
+	MaxStreams           *int64
 	MaxConsumers         *int64
 	MaxBytesRequired     *bool
 	MemoryMaxStreamBytes string

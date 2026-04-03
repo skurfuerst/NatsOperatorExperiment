@@ -73,7 +73,7 @@ func TestGenerateAccountWithAllJetStreamFields(t *testing.T) {
 				JetStream: &JetStreamConfig{
 					MaxMemory:            "512M",
 					MaxFile:              "1G",
-					MaxStreams:            &maxStreams,
+					MaxStreams:           &maxStreams,
 					MaxConsumers:         &maxConsumers,
 					MaxBytesRequired:     &maxBytesRequired,
 					MemoryMaxStreamBytes: "100M",
@@ -294,9 +294,9 @@ func TestGenerateAccountNoJetStreamNoLimits(t *testing.T) {
 func TestGenerateDeterministicAccountOrder(t *testing.T) {
 	cfg := &NatsConfig{
 		Accounts: map[string]AccountConfig{
-			"zebra":    {Users: []UserConfig{{NKey: "UZ1"}}},
-			"alpha":    {Users: []UserConfig{{NKey: "UA1"}}},
-			"middle":   {Users: []UserConfig{{NKey: "UM1"}}},
+			"zebra":  {Users: []UserConfig{{NKey: "UZ1"}}},
+			"alpha":  {Users: []UserConfig{{NKey: "UA1"}}},
+			"middle": {Users: []UserConfig{{NKey: "UM1"}}},
 		},
 	}
 	// Generate multiple times and verify order is consistent
