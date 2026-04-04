@@ -23,6 +23,7 @@ import (
 	"regexp"
 	"sort"
 
+	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
@@ -56,6 +57,8 @@ type NatsClusterReconciler struct {
 // +kubebuilder:rbac:groups=nats.k8s.sandstorm.de,resources=natsusers/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups="",resources=configmaps,verbs=get;list;watch;create;update;patch
 // +kubebuilder:rbac:groups="",resources=secrets,verbs=get;list;watch;create;update;patch
+// +kubebuilder:rbac:groups=apps,resources=deployments,verbs=get;patch
+// +kubebuilder:rbac:groups=apps,resources=statefulsets,verbs=get;patch
 
 func (r *NatsClusterReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	log := logf.FromContext(ctx)
@@ -193,7 +196,18 @@ func (r *NatsClusterReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 		log.Info("ConfigMap updated", "name", configMapName, "operation", result)
 	}
 
-	// 7. Update cluster status
+	// 7. Annotate workload for reload if config changed
+	if hash != cluster.Status.LastConfigHash && cluster.Spec.ServerRef != nil {
+		if err := r.patchWorkloadAnnotation(ctx, cluster, hash); err != nil {
+			log.Error(err, "failed to annotate workload for reload")
+			r.setClusterCondition(ctx, cluster, metav1.ConditionFalse, natsv1alpha1.ReasonReconcileError,
+				fmt.Sprintf("failed to annotate workload: %v", err))
+			return ctrl.Result{}, err
+		}
+		log.Info("annotated workload for reload", "hash", hash)
+	}
+
+	// 8. Update cluster status
 	cluster.Status.AccountCount = len(matchingAccounts)
 	cluster.Status.UserCount = totalUsers
 	cluster.Status.LastConfigHash = hash
@@ -209,6 +223,48 @@ func (r *NatsClusterReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 	}
 
 	return ctrl.Result{}, nil
+}
+
+const configHashAnnotation = "nats.k8s.sandstorm.de/config-hash"
+
+// patchWorkloadAnnotation patches the target Deployment/StatefulSet pod template
+// with a config hash annotation to trigger a rolling restart.
+func (r *NatsClusterReconciler) patchWorkloadAnnotation(ctx context.Context, cluster *natsv1alpha1.NatsCluster, hash string) error {
+	ref := cluster.Spec.ServerRef
+	ns := ref.Namespace
+	if ns == "" {
+		ns = cluster.Namespace
+	}
+	key := types.NamespacedName{Name: ref.Name, Namespace: ns}
+
+	switch ref.Kind {
+	case "Deployment":
+		deploy := &appsv1.Deployment{}
+		if err := r.Get(ctx, key, deploy); err != nil {
+			return fmt.Errorf("getting deployment %s: %w", key, err)
+		}
+		patch := client.MergeFrom(deploy.DeepCopy())
+		if deploy.Spec.Template.Annotations == nil {
+			deploy.Spec.Template.Annotations = make(map[string]string)
+		}
+		deploy.Spec.Template.Annotations[configHashAnnotation] = hash
+		return r.Patch(ctx, deploy, patch)
+
+	case "StatefulSet":
+		sts := &appsv1.StatefulSet{}
+		if err := r.Get(ctx, key, sts); err != nil {
+			return fmt.Errorf("getting statefulset %s: %w", key, err)
+		}
+		patch := client.MergeFrom(sts.DeepCopy())
+		if sts.Spec.Template.Annotations == nil {
+			sts.Spec.Template.Annotations = make(map[string]string)
+		}
+		sts.Spec.Template.Annotations[configHashAnnotation] = hash
+		return r.Patch(ctx, sts, patch)
+
+	default:
+		return fmt.Errorf("unsupported workload kind: %s", ref.Kind)
+	}
 }
 
 // ensureNKeySecret ensures a Secret with NKey seed/public key exists for the user.
@@ -274,6 +330,7 @@ func (r *NatsClusterReconciler) ensureNKeySecret(ctx context.Context, user *nats
 	return publicKey, nil
 }
 
+//nolint:unparam // status kept as parameter for consistency with setAccountCondition/setUserCondition
 func (r *NatsClusterReconciler) setClusterCondition(ctx context.Context, cluster *natsv1alpha1.NatsCluster, status metav1.ConditionStatus, reason, message string) {
 	meta.SetStatusCondition(&cluster.Status.Conditions, metav1.Condition{
 		Type:               natsv1alpha1.ConditionReady,

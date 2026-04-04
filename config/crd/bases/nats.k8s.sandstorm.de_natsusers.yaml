@@ -66,6 +66,21 @@ spec:
                 description: Permissions defines publish/subscribe permissions for
                   this user.
                 properties:
+                  allowResponses:
+                    description: |-
+                      AllowResponses enables or configures response permissions for request-reply.
+                      If set with no fields, emits "allow_responses: true".
+                      If MaxMsgs or TTL is set, emits the structured form.
+                    properties:
+                      maxMsgs:
+                        description: MaxMsgs is the maximum number of response messages
+                          allowed.
+                        type: integer
+                      ttl:
+                        description: TTL is the time window for responses (e.g., "5m",
+                          "30s").
+                        type: string
+                    type: object
                   publish:
                     description: Publish defines publish permissions.
                     properties:

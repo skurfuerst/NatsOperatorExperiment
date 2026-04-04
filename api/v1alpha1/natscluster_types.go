@@ -22,6 +22,25 @@ import (
 
 // NatsClusterSpec defines the desired state of NatsCluster.
 type NatsClusterSpec struct {
+	// ServerRef optionally references the Deployment or StatefulSet running NATS.
+	// When set, the controller annotates the workload's pod template with the
+	// config hash, triggering a rolling restart on config changes.
+	// +optional
+	ServerRef *WorkloadReference `json:"serverRef,omitempty"`
+}
+
+// WorkloadReference references a Deployment or StatefulSet.
+type WorkloadReference struct {
+	// Kind is the workload type.
+	// +kubebuilder:validation:Enum=Deployment;StatefulSet
+	Kind string `json:"kind"`
+
+	// Name of the Deployment or StatefulSet.
+	Name string `json:"name"`
+
+	// Namespace of the workload. Defaults to the NatsCluster's namespace if empty.
+	// +optional
+	Namespace string `json:"namespace,omitempty"`
 }
 
 // NatsClusterStatus defines the observed state of NatsCluster.

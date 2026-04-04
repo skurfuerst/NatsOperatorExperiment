@@ -40,8 +40,15 @@ type UserConfig struct {
 
 // PermissionsConfig represents publish/subscribe permissions.
 type PermissionsConfig struct {
-	Publish   *PermissionRuleConfig
-	Subscribe *PermissionRuleConfig
+	Publish        *PermissionRuleConfig
+	Subscribe      *PermissionRuleConfig
+	AllowResponses *ResponsePermissionConfig
+}
+
+// ResponsePermissionConfig represents NATS allow_responses configuration.
+type ResponsePermissionConfig struct {
+	MaxMsgs *int
+	TTL     *string
 }
 
 // PermissionRuleConfig represents allowed and denied subjects.
