@@ -187,13 +187,14 @@ func TestConvertToNatsConfigWithAllowResponses(t *testing.T) {
 			},
 			Users: []UserWithPublicKey{
 				{
+					// User 1: structured object form with maxMsgs + ttl
 					User: natsv1alpha1.NatsUser{
 						Spec: natsv1alpha1.NatsUserSpec{
 							Permissions: &natsv1alpha1.Permissions{
 								Publish: &natsv1alpha1.PermissionRule{
 									Allow: []string{"requests.>"},
 								},
-								AllowResponses: &natsv1alpha1.ResponsePermission{
+								AllowResponses: &natsv1alpha1.AllowResponsesSpec{
 									MaxMsgs: &maxMsgs,
 									TTL:     &ttl,
 								},
@@ -203,14 +204,37 @@ func TestConvertToNatsConfigWithAllowResponses(t *testing.T) {
 					PublicKey: "USVC1",
 				},
 				{
+					// User 2: empty object form {} → allow_responses: true
 					User: natsv1alpha1.NatsUser{
 						Spec: natsv1alpha1.NatsUserSpec{
 							Permissions: &natsv1alpha1.Permissions{
-								AllowResponses: &natsv1alpha1.ResponsePermission{},
+								AllowResponses: &natsv1alpha1.AllowResponsesSpec{},
 							},
 						},
 					},
 					PublicKey: "USVC2",
+				},
+				{
+					// User 3: boolean true form
+					User: natsv1alpha1.NatsUser{
+						Spec: natsv1alpha1.NatsUserSpec{
+							Permissions: &natsv1alpha1.Permissions{
+								AllowResponses: natsv1alpha1.NewAllowResponsesBool(true),
+							},
+						},
+					},
+					PublicKey: "USVC3",
+				},
+				{
+					// User 4: boolean false form → do not emit
+					User: natsv1alpha1.NatsUser{
+						Spec: natsv1alpha1.NatsUserSpec{
+							Permissions: &natsv1alpha1.Permissions{
+								AllowResponses: natsv1alpha1.NewAllowResponsesBool(false),
+							},
+						},
+					},
+					PublicKey: "USVC4",
 				},
 			},
 		},
@@ -224,6 +248,9 @@ func TestConvertToNatsConfigWithAllowResponses(t *testing.T) {
 	if u1.Permissions.AllowResponses == nil {
 		t.Fatal("expected AllowResponses on user 1")
 	}
+	if !u1.Permissions.AllowResponses.Enabled {
+		t.Error("expected Enabled=true for user 1")
+	}
 	if *u1.Permissions.AllowResponses.MaxMsgs != 1 {
 		t.Errorf("expected MaxMsgs 1, got %d", *u1.Permissions.AllowResponses.MaxMsgs)
 	}
@@ -231,15 +258,36 @@ func TestConvertToNatsConfigWithAllowResponses(t *testing.T) {
 		t.Errorf("expected TTL 5m, got %s", *u1.Permissions.AllowResponses.TTL)
 	}
 
-	// User 2: boolean allow_responses (no fields set)
+	// User 2: empty object form → Enabled=true, no MaxMsgs/TTL
 	u2 := acct.Users[1]
 	if u2.Permissions.AllowResponses == nil {
 		t.Fatal("expected AllowResponses on user 2")
+	}
+	if !u2.Permissions.AllowResponses.Enabled {
+		t.Error("expected Enabled=true for empty object form")
 	}
 	if u2.Permissions.AllowResponses.MaxMsgs != nil {
 		t.Error("expected nil MaxMsgs for boolean form")
 	}
 	if u2.Permissions.AllowResponses.TTL != nil {
 		t.Error("expected nil TTL for boolean form")
+	}
+
+	// User 3: boolean true → Enabled=true
+	u3 := acct.Users[2]
+	if u3.Permissions.AllowResponses == nil {
+		t.Fatal("expected AllowResponses on user 3")
+	}
+	if !u3.Permissions.AllowResponses.Enabled {
+		t.Error("expected Enabled=true for boolean true form")
+	}
+
+	// User 4: boolean false → Enabled=false
+	u4 := acct.Users[3]
+	if u4.Permissions.AllowResponses == nil {
+		t.Fatal("expected AllowResponses on user 4 (non-nil even when disabled)")
+	}
+	if u4.Permissions.AllowResponses.Enabled {
+		t.Error("expected Enabled=false for boolean false form")
 	}
 }

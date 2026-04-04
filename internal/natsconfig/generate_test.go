@@ -302,7 +302,7 @@ func TestGenerateUserWithAllowResponsesBoolean(t *testing.T) {
 							Publish: &PermissionRuleConfig{
 								Allow: []string{"requests.>"},
 							},
-							AllowResponses: &ResponsePermissionConfig{},
+							AllowResponses: &ResponsePermissionConfig{Enabled: true},
 						},
 					},
 				},
@@ -326,6 +326,7 @@ func TestGenerateUserWithAllowResponsesStructured(t *testing.T) {
 						NKey: "USVC2",
 						Permissions: &PermissionsConfig{
 							AllowResponses: &ResponsePermissionConfig{
+								Enabled: true,
 								MaxMsgs: &maxMsgs,
 								TTL:     &ttl,
 							},
@@ -357,6 +358,7 @@ func TestGenerateUserWithAllowResponsesPartial(t *testing.T) {
 						NKey: "USVC3",
 						Permissions: &PermissionsConfig{
 							AllowResponses: &ResponsePermissionConfig{
+								Enabled: true,
 								MaxMsgs: &maxMsgs,
 							},
 						},
@@ -374,6 +376,27 @@ func TestGenerateUserWithAllowResponsesPartial(t *testing.T) {
 	}
 	if strings.Contains(result, "ttl") {
 		t.Error("should not contain ttl when not set")
+	}
+}
+
+func TestGenerateUserWithAllowResponsesDisabled(t *testing.T) {
+	cfg := &NatsConfig{
+		Accounts: map[string]AccountConfig{
+			"svc": {
+				Users: []UserConfig{
+					{
+						NKey: "USVC4",
+						Permissions: &PermissionsConfig{
+							AllowResponses: &ResponsePermissionConfig{Enabled: false},
+						},
+					},
+				},
+			},
+		},
+	}
+	result := Generate(cfg)
+	if strings.Contains(result, "allow_responses") {
+		t.Error("expected no allow_responses when Enabled is false")
 	}
 }
 
