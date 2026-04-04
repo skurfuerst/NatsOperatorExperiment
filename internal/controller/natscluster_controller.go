@@ -45,7 +45,8 @@ import (
 // NatsClusterReconciler reconciles a NatsCluster object
 type NatsClusterReconciler struct {
 	client.Client
-	Scheme *runtime.Scheme
+	Scheme      *runtime.Scheme
+	PodReloader PodReloader
 }
 
 // +kubebuilder:rbac:groups=nats.k8s.sandstorm.de,resources=natsclusters,verbs=get;list;watch;update;patch
@@ -57,8 +58,10 @@ type NatsClusterReconciler struct {
 // +kubebuilder:rbac:groups=nats.k8s.sandstorm.de,resources=natsusers/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups="",resources=configmaps,verbs=get;list;watch;create;update;patch
 // +kubebuilder:rbac:groups="",resources=secrets,verbs=get;list;watch;create;update;patch
-// +kubebuilder:rbac:groups=apps,resources=deployments,verbs=get;patch
-// +kubebuilder:rbac:groups=apps,resources=statefulsets,verbs=get;patch
+// +kubebuilder:rbac:groups=apps,resources=deployments,verbs=get
+// +kubebuilder:rbac:groups=apps,resources=statefulsets,verbs=get
+// +kubebuilder:rbac:groups="",resources=pods,verbs=get;list
+// +kubebuilder:rbac:groups="",resources=pods/exec,verbs=create
 
 func (r *NatsClusterReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	log := logf.FromContext(ctx)
@@ -196,15 +199,15 @@ func (r *NatsClusterReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 		log.Info("ConfigMap updated", "name", configMapName, "operation", result)
 	}
 
-	// 7. Annotate workload for reload if config changed
+	// 7. Send SIGHUP to NATS pods if config changed
 	if hash != cluster.Status.LastConfigHash && cluster.Spec.ServerRef != nil {
-		if err := r.patchWorkloadAnnotation(ctx, cluster, hash); err != nil {
-			log.Error(err, "failed to annotate workload for reload")
+		if err := r.reloadNatsPods(ctx, cluster); err != nil {
+			log.Error(err, "failed to reload NATS pods")
 			r.setClusterCondition(ctx, cluster, metav1.ConditionFalse, natsv1alpha1.ReasonReconcileError,
-				fmt.Sprintf("failed to annotate workload: %v", err))
+				fmt.Sprintf("failed to reload NATS pods: %v", err))
 			return ctrl.Result{}, err
 		}
-		log.Info("annotated workload for reload", "hash", hash)
+		log.Info("sent SIGHUP to NATS pods for config reload")
 	}
 
 	// 8. Update cluster status
@@ -225,11 +228,10 @@ func (r *NatsClusterReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 	return ctrl.Result{}, nil
 }
 
-const configHashAnnotation = "nats.k8s.sandstorm.de/config-hash"
-
-// patchWorkloadAnnotation patches the target Deployment/StatefulSet pod template
-// with a config hash annotation to trigger a rolling restart.
-func (r *NatsClusterReconciler) patchWorkloadAnnotation(ctx context.Context, cluster *natsv1alpha1.NatsCluster, hash string) error {
+// reloadNatsPods sends SIGHUP to all Running pods of the referenced workload,
+// triggering the NATS server to reload its configuration without restarting.
+func (r *NatsClusterReconciler) reloadNatsPods(ctx context.Context, cluster *natsv1alpha1.NatsCluster) error {
+	log := logf.FromContext(ctx)
 	ref := cluster.Spec.ServerRef
 	ns := ref.Namespace
 	if ns == "" {
@@ -237,34 +239,46 @@ func (r *NatsClusterReconciler) patchWorkloadAnnotation(ctx context.Context, clu
 	}
 	key := types.NamespacedName{Name: ref.Name, Namespace: ns}
 
+	var podSelector *metav1.LabelSelector
 	switch ref.Kind {
 	case "Deployment":
 		deploy := &appsv1.Deployment{}
 		if err := r.Get(ctx, key, deploy); err != nil {
 			return fmt.Errorf("getting deployment %s: %w", key, err)
 		}
-		patch := client.MergeFrom(deploy.DeepCopy())
-		if deploy.Spec.Template.Annotations == nil {
-			deploy.Spec.Template.Annotations = make(map[string]string)
-		}
-		deploy.Spec.Template.Annotations[configHashAnnotation] = hash
-		return r.Patch(ctx, deploy, patch)
-
+		podSelector = deploy.Spec.Selector
 	case "StatefulSet":
 		sts := &appsv1.StatefulSet{}
 		if err := r.Get(ctx, key, sts); err != nil {
 			return fmt.Errorf("getting statefulset %s: %w", key, err)
 		}
-		patch := client.MergeFrom(sts.DeepCopy())
-		if sts.Spec.Template.Annotations == nil {
-			sts.Spec.Template.Annotations = make(map[string]string)
-		}
-		sts.Spec.Template.Annotations[configHashAnnotation] = hash
-		return r.Patch(ctx, sts, patch)
-
+		podSelector = sts.Spec.Selector
 	default:
 		return fmt.Errorf("unsupported workload kind: %s", ref.Kind)
 	}
+
+	selector, err := metav1.LabelSelectorAsSelector(podSelector)
+	if err != nil {
+		return fmt.Errorf("parsing label selector: %w", err)
+	}
+
+	podList := &corev1.PodList{}
+	if err := r.List(ctx, podList, client.InNamespace(ns), client.MatchingLabelsSelector{Selector: selector}); err != nil {
+		return fmt.Errorf("listing pods: %w", err)
+	}
+
+	for i := range podList.Items {
+		pod := &podList.Items[i]
+		if pod.Status.Phase != corev1.PodRunning {
+			log.Info("skipping non-running pod", "pod", pod.Name, "phase", pod.Status.Phase)
+			continue
+		}
+		if err := r.PodReloader.ReloadPod(ctx, ns, pod.Name); err != nil {
+			return fmt.Errorf("reloading pod %s: %w", pod.Name, err)
+		}
+		log.Info("sent SIGHUP to pod", "pod", pod.Name)
+	}
+	return nil
 }
 
 // ensureNKeySecret ensures a Secret with NKey seed/public key exists for the user.
