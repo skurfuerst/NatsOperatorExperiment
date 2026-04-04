@@ -27,6 +27,7 @@ import (
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	natsv1alpha1 "github.com/skurfuerst/natsoperatorexperiment/api/v1alpha1"
@@ -1321,7 +1322,7 @@ var _ = Describe("NatsCluster Controller", func() {
 				ObjectMeta: metav1.ObjectMeta{Name: clusterName, Namespace: clusterNs},
 			}
 			Expect(k8sClient.Create(ctx, cluster)).To(Succeed())
-			DeferCleanup(func() { k8sClient.Delete(ctx, cluster) })
+			DeferCleanup(func() { Expect(k8sClient.Delete(ctx, cluster)).To(Succeed()) })
 
 			account := &natsv1alpha1.NatsAccount{
 				ObjectMeta: metav1.ObjectMeta{Name: accountName, Namespace: clusterNs},
@@ -1333,7 +1334,7 @@ var _ = Describe("NatsCluster Controller", func() {
 				},
 			}
 			Expect(k8sClient.Create(ctx, account)).To(Succeed())
-			DeferCleanup(func() { k8sClient.Delete(ctx, account) })
+			DeferCleanup(func() { Expect(k8sClient.Delete(ctx, account)).To(Succeed()) })
 
 			// Default user — no InboxPrefix, no InsecureSharedInboxPrefix
 			user := &natsv1alpha1.NatsUser{
@@ -1344,11 +1345,11 @@ var _ = Describe("NatsCluster Controller", func() {
 			}
 			Expect(k8sClient.Create(ctx, user)).To(Succeed())
 			DeferCleanup(func() {
-				k8sClient.Delete(ctx, user)
+				Expect(k8sClient.Delete(ctx, user)).To(Succeed())
 				// Explicitly delete the NKey secret since envtest may not GC owned resources
-				k8sClient.Delete(ctx, &corev1.Secret{ObjectMeta: metav1.ObjectMeta{
+				Expect(client.IgnoreNotFound(k8sClient.Delete(ctx, &corev1.Secret{ObjectMeta: metav1.ObjectMeta{
 					Name: userName + "-nats-nkey", Namespace: clusterNs,
-				}})
+				}}))).To(Succeed())
 			})
 
 			doReconcile()
@@ -1378,7 +1379,7 @@ var _ = Describe("NatsCluster Controller", func() {
 				ObjectMeta: metav1.ObjectMeta{Name: clusterName, Namespace: clusterNs},
 			}
 			Expect(k8sClient.Create(ctx, cluster)).To(Succeed())
-			DeferCleanup(func() { k8sClient.Delete(ctx, cluster) })
+			DeferCleanup(func() { Expect(k8sClient.Delete(ctx, cluster)).To(Succeed()) })
 
 			account := &natsv1alpha1.NatsAccount{
 				ObjectMeta: metav1.ObjectMeta{Name: accountName, Namespace: clusterNs},
@@ -1390,7 +1391,7 @@ var _ = Describe("NatsCluster Controller", func() {
 				},
 			}
 			Expect(k8sClient.Create(ctx, account)).To(Succeed())
-			DeferCleanup(func() { k8sClient.Delete(ctx, account) })
+			DeferCleanup(func() { Expect(k8sClient.Delete(ctx, account)).To(Succeed()) })
 
 			user := &natsv1alpha1.NatsUser{
 				ObjectMeta: metav1.ObjectMeta{Name: userName, Namespace: clusterNs},
@@ -1401,10 +1402,10 @@ var _ = Describe("NatsCluster Controller", func() {
 			}
 			Expect(k8sClient.Create(ctx, user)).To(Succeed())
 			DeferCleanup(func() {
-				k8sClient.Delete(ctx, user)
-				k8sClient.Delete(ctx, &corev1.Secret{ObjectMeta: metav1.ObjectMeta{
+				Expect(k8sClient.Delete(ctx, user)).To(Succeed())
+				Expect(client.IgnoreNotFound(k8sClient.Delete(ctx, &corev1.Secret{ObjectMeta: metav1.ObjectMeta{
 					Name: userName + "-nats-nkey", Namespace: clusterNs,
-				}})
+				}}))).To(Succeed())
 			})
 
 			doReconcile()
