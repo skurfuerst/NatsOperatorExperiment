@@ -14,4 +14,5 @@ const (
 	ReasonClusterNotFound     = "ClusterNotFound"
 	ReasonAccountNotFound     = "AccountNotFound"
 	ReasonNamespaceNotAllowed = "NamespaceNotAllowed"
+	ReasonNamespaceFetchError = "NamespaceFetchError"
 )

@@ -45,7 +45,8 @@ import (
 // NatsClusterReconciler reconciles a NatsCluster object
 type NatsClusterReconciler struct {
 	client.Client
-	Scheme *runtime.Scheme
+	Scheme      *runtime.Scheme
+	PodReloader PodReloader
 }
 
 // +kubebuilder:rbac:groups=nats.k8s.sandstorm.de,resources=natsclusters,verbs=get;list;watch;update;patch
@@ -57,8 +58,11 @@ type NatsClusterReconciler struct {
 // +kubebuilder:rbac:groups=nats.k8s.sandstorm.de,resources=natsusers/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups="",resources=configmaps,verbs=get;list;watch;create;update;patch
 // +kubebuilder:rbac:groups="",resources=secrets,verbs=get;list;watch;create;update;patch
-// +kubebuilder:rbac:groups=apps,resources=deployments,verbs=get;patch
-// +kubebuilder:rbac:groups=apps,resources=statefulsets,verbs=get;patch
+// +kubebuilder:rbac:groups=apps,resources=deployments,verbs=get
+// +kubebuilder:rbac:groups=apps,resources=statefulsets,verbs=get
+// +kubebuilder:rbac:groups="",resources=pods,verbs=get;list
+// +kubebuilder:rbac:groups="",resources=pods/exec,verbs=create
+// +kubebuilder:rbac:groups="",resources=namespaces,verbs=get;list;watch
 
 func (r *NatsClusterReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	log := logf.FromContext(ctx)
@@ -98,11 +102,20 @@ func (r *NatsClusterReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 	for i := range matchingAccounts {
 		acct := &matchingAccounts[i]
 
-		// Compile allowed namespace regexes
-		regexes, err := compileNamespaceRegexes(acct.Spec.AllowedUserNamespaces)
-		if err != nil {
-			log.Error(err, "failed to compile allowedUserNamespaces regex", "account", acct.Name)
-			r.setAccountCondition(ctx, acct, metav1.ConditionFalse, natsv1alpha1.ReasonInvalidRegex, err.Error())
+		// Pre-validate all regex rules for this account
+		accountValid := true
+		for _, rule := range acct.Spec.UserRules {
+			if rule.NamespaceRegex != nil {
+				if _, err := regexp.Compile(*rule.NamespaceRegex); err != nil {
+					log.Error(err, "invalid namespaceRegex in userRules", "account", acct.Name)
+					r.setAccountCondition(ctx, acct, metav1.ConditionFalse, natsv1alpha1.ReasonInvalidRegex,
+						fmt.Sprintf("invalid namespaceRegex %q: %v", *rule.NamespaceRegex, err))
+					accountValid = false
+					break
+				}
+			}
+		}
+		if !accountValid {
 			continue
 		}
 
@@ -126,11 +139,18 @@ func (r *NatsClusterReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 				continue
 			}
 
-			// Validate user namespace against account's allowedUserNamespaces
-			if user.Namespace != acct.Namespace && !isNamespaceAllowed(user.Namespace, regexes) {
-				log.Info("user namespace not allowed", "user", user.Name, "userNamespace", user.Namespace, "account", acct.Name)
+			// Evaluate user rules (all users, including same-namespace)
+			allowed, err := r.evaluateUserRules(ctx, acct.Spec.UserRules, user.Namespace, acct.Namespace)
+			if err != nil {
+				log.Error(err, "failed to evaluate user rules", "user", user.Name)
+				r.setUserCondition(ctx, user, metav1.ConditionFalse, natsv1alpha1.ReasonNamespaceFetchError,
+					fmt.Sprintf("error evaluating user rules for namespace %q: %v", user.Namespace, err))
+				continue
+			}
+			if !allowed {
+				log.Info("user not allowed by rules", "user", user.Name, "userNamespace", user.Namespace, "account", acct.Name)
 				r.setUserCondition(ctx, user, metav1.ConditionFalse, natsv1alpha1.ReasonNamespaceNotAllowed,
-					fmt.Sprintf("namespace %q not allowed by account %q", user.Namespace, acct.Name))
+					fmt.Sprintf("namespace %q not allowed by account %q userRules", user.Namespace, acct.Name))
 				continue
 			}
 
@@ -197,15 +217,15 @@ func (r *NatsClusterReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 		log.Info("ConfigMap updated", "name", configMapName, "operation", result)
 	}
 
-	// 7. Annotate workload for reload if config changed
+	// 7. Send SIGHUP to NATS pods if config changed
 	if hash != cluster.Status.LastConfigHash && cluster.Spec.ServerRef != nil {
-		if err := r.patchWorkloadAnnotation(ctx, cluster, hash); err != nil {
-			log.Error(err, "failed to annotate workload for reload")
+		if err := r.reloadNatsPods(ctx, cluster); err != nil {
+			log.Error(err, "failed to reload NATS pods")
 			r.setClusterCondition(ctx, cluster, metav1.ConditionFalse, natsv1alpha1.ReasonReconcileError,
-				fmt.Sprintf("failed to annotate workload: %v", err))
+				fmt.Sprintf("failed to reload NATS pods: %v", err))
 			return ctrl.Result{}, err
 		}
-		log.Info("annotated workload for reload", "hash", hash)
+		log.Info("sent SIGHUP to NATS pods for config reload")
 	}
 
 	// 8. Update cluster status
@@ -226,46 +246,53 @@ func (r *NatsClusterReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 	return ctrl.Result{}, nil
 }
 
-const configHashAnnotation = "nats.k8s.sandstorm.de/config-hash"
-
-// patchWorkloadAnnotation patches the target Deployment/StatefulSet pod template
-// with a config hash annotation to trigger a rolling restart.
-func (r *NatsClusterReconciler) patchWorkloadAnnotation(ctx context.Context, cluster *natsv1alpha1.NatsCluster, hash string) error {
+// reloadNatsPods sends SIGHUP to all Running pods of the referenced workload,
+// triggering the NATS server to reload its configuration without restarting.
+func (r *NatsClusterReconciler) reloadNatsPods(ctx context.Context, cluster *natsv1alpha1.NatsCluster) error {
+	log := logf.FromContext(ctx)
 	ref := cluster.Spec.ServerRef
-	ns := ref.Namespace
-	if ns == "" {
-		ns = cluster.Namespace
-	}
-	key := types.NamespacedName{Name: ref.Name, Namespace: ns}
+	key := types.NamespacedName{Name: ref.Name, Namespace: cluster.Namespace}
 
+	var podSelector *metav1.LabelSelector
 	switch ref.Kind {
 	case "Deployment":
 		deploy := &appsv1.Deployment{}
 		if err := r.Get(ctx, key, deploy); err != nil {
 			return fmt.Errorf("getting deployment %s: %w", key, err)
 		}
-		patch := client.MergeFrom(deploy.DeepCopy())
-		if deploy.Spec.Template.Annotations == nil {
-			deploy.Spec.Template.Annotations = make(map[string]string)
-		}
-		deploy.Spec.Template.Annotations[configHashAnnotation] = hash
-		return r.Patch(ctx, deploy, patch)
-
+		podSelector = deploy.Spec.Selector
 	case "StatefulSet":
 		sts := &appsv1.StatefulSet{}
 		if err := r.Get(ctx, key, sts); err != nil {
 			return fmt.Errorf("getting statefulset %s: %w", key, err)
 		}
-		patch := client.MergeFrom(sts.DeepCopy())
-		if sts.Spec.Template.Annotations == nil {
-			sts.Spec.Template.Annotations = make(map[string]string)
-		}
-		sts.Spec.Template.Annotations[configHashAnnotation] = hash
-		return r.Patch(ctx, sts, patch)
-
+		podSelector = sts.Spec.Selector
 	default:
 		return fmt.Errorf("unsupported workload kind: %s", ref.Kind)
 	}
+
+	selector, err := metav1.LabelSelectorAsSelector(podSelector)
+	if err != nil {
+		return fmt.Errorf("parsing label selector: %w", err)
+	}
+
+	podList := &corev1.PodList{}
+	if err := r.List(ctx, podList, client.InNamespace(cluster.Namespace), client.MatchingLabelsSelector{Selector: selector}); err != nil {
+		return fmt.Errorf("listing pods: %w", err)
+	}
+
+	for i := range podList.Items {
+		pod := &podList.Items[i]
+		if pod.Status.Phase != corev1.PodRunning {
+			log.Info("skipping non-running pod", "pod", pod.Name, "phase", pod.Status.Phase)
+			continue
+		}
+		if err := r.PodReloader.ReloadPod(ctx, cluster.Namespace, pod.Name); err != nil {
+			return fmt.Errorf("reloading pod %s: %w", pod.Name, err)
+		}
+		log.Info("sent SIGHUP to pod", "pod", pod.Name)
+	}
+	return nil
 }
 
 // ensureNKeySecret ensures a Secret with NKey seed/public key (and inbox prefix) exists for
@@ -422,25 +449,57 @@ func (r *NatsClusterReconciler) setUserCondition(ctx context.Context, user *nats
 	}
 }
 
-func compileNamespaceRegexes(patterns []string) ([]*regexp.Regexp, error) {
-	regexes := make([]*regexp.Regexp, 0, len(patterns))
-	for _, p := range patterns {
-		re, err := regexp.Compile(p)
+// evaluateUserRules evaluates the ordered user rules against userNamespace.
+// Returns (true, nil) if a grant rule matches first.
+// Returns (false, nil) if a deny rule matches first, or no rules match.
+// Returns (false, err) if a namespace fetch for label matching fails.
+func (r *NatsClusterReconciler) evaluateUserRules(
+	ctx context.Context,
+	rules []natsv1alpha1.UserRule,
+	userNamespace string,
+	accountNamespace string,
+) (bool, error) {
+	for _, rule := range rules {
+		matched, err := r.ruleMatchesUser(ctx, rule, userNamespace, accountNamespace)
 		if err != nil {
-			return nil, fmt.Errorf("invalid regex %q: %w", p, err)
+			return false, err
 		}
-		regexes = append(regexes, re)
+		if matched {
+			return rule.Action == natsv1alpha1.UserRuleActionGrant, nil
+		}
 	}
-	return regexes, nil
+	return false, nil // no match → default deny
 }
 
-func isNamespaceAllowed(namespace string, regexes []*regexp.Regexp) bool {
-	for _, re := range regexes {
-		if re.MatchString(namespace) {
-			return true
+func (r *NatsClusterReconciler) ruleMatchesUser(
+	ctx context.Context,
+	rule natsv1alpha1.UserRule,
+	userNamespace string,
+	accountNamespace string,
+) (bool, error) {
+	switch {
+	case rule.SameNamespace != nil && *rule.SameNamespace:
+		return userNamespace == accountNamespace, nil
+	case rule.NamespaceRegex != nil:
+		re, err := regexp.Compile(*rule.NamespaceRegex)
+		if err != nil {
+			return false, fmt.Errorf("invalid namespaceRegex %q: %w", *rule.NamespaceRegex, err)
 		}
+		return re.MatchString(userNamespace), nil
+	case rule.NamespaceLabels != nil:
+		ns := &corev1.Namespace{}
+		if err := r.Get(ctx, types.NamespacedName{Name: userNamespace}, ns); err != nil {
+			return false, fmt.Errorf("fetching namespace %q: %w", userNamespace, err)
+		}
+		for k, v := range rule.NamespaceLabels {
+			if ns.Labels[k] != v {
+				return false, nil
+			}
+		}
+		return true, nil
+	default:
+		return false, nil
 	}
-	return false
 }
 
 // mapAccountToCluster maps a NatsAccount change to the NatsCluster it references.

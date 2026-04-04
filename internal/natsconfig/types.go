@@ -46,7 +46,10 @@ type PermissionsConfig struct {
 }
 
 // ResponsePermissionConfig represents NATS allow_responses configuration.
+// Enabled must be true for allow_responses to be emitted; false suppresses it
+// (e.g. when the CRD field is set to the boolean false).
 type ResponsePermissionConfig struct {
+	Enabled bool
 	MaxMsgs *int
 	TTL     *string
 }
