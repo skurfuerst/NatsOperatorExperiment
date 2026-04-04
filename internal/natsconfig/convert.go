@@ -99,6 +99,12 @@ func convertPermissions(p *natsv1alpha1.Permissions) *PermissionsConfig {
 			Deny:  p.Subscribe.Deny,
 		}
 	}
+	if p.AllowResponses != nil {
+		c.AllowResponses = &ResponsePermissionConfig{
+			MaxMsgs: p.AllowResponses.MaxMsgs,
+			TTL:     p.AllowResponses.TTL,
+		}
+	}
 	return c
 }
 

@@ -45,6 +45,30 @@ spec:
             type: object
           spec:
             description: NatsClusterSpec defines the desired state of NatsCluster.
+            properties:
+              serverRef:
+                description: |-
+                  ServerRef optionally references the Deployment or StatefulSet running NATS.
+                  When set, the controller annotates the workload's pod template with the
+                  config hash, triggering a rolling restart on config changes.
+                properties:
+                  kind:
+                    description: Kind is the workload type.
+                    enum:
+                    - Deployment
+                    - StatefulSet
+                    type: string
+                  name:
+                    description: Name of the Deployment or StatefulSet.
+                    type: string
+                  namespace:
+                    description: Namespace of the workload. Defaults to the NatsCluster's
+                      namespace if empty.
+                    type: string
+                required:
+                - kind
+                - name
+                type: object
             type: object
           status:
             description: NatsClusterStatus defines the observed state of NatsCluster.

@@ -291,6 +291,92 @@ func TestGenerateAccountNoJetStreamNoLimits(t *testing.T) {
 	}
 }
 
+func TestGenerateUserWithAllowResponsesBoolean(t *testing.T) {
+	cfg := &NatsConfig{
+		Accounts: map[string]AccountConfig{
+			"svc": {
+				Users: []UserConfig{
+					{
+						NKey: "USVC1",
+						Permissions: &PermissionsConfig{
+							Publish: &PermissionRuleConfig{
+								Allow: []string{"requests.>"},
+							},
+							AllowResponses: &ResponsePermissionConfig{},
+						},
+					},
+				},
+			},
+		},
+	}
+	result := Generate(cfg)
+	if !strings.Contains(result, "allow_responses: true") {
+		t.Error("expected allow_responses: true")
+	}
+}
+
+func TestGenerateUserWithAllowResponsesStructured(t *testing.T) {
+	maxMsgs := 1
+	ttl := "5m"
+	cfg := &NatsConfig{
+		Accounts: map[string]AccountConfig{
+			"svc": {
+				Users: []UserConfig{
+					{
+						NKey: "USVC2",
+						Permissions: &PermissionsConfig{
+							AllowResponses: &ResponsePermissionConfig{
+								MaxMsgs: &maxMsgs,
+								TTL:     &ttl,
+							},
+						},
+					},
+				},
+			},
+		},
+	}
+	result := Generate(cfg)
+	if !strings.Contains(result, "allow_responses {") {
+		t.Error("expected structured allow_responses block")
+	}
+	if !strings.Contains(result, "max: 1") {
+		t.Error("expected max: 1")
+	}
+	if !strings.Contains(result, `ttl: "5m"`) {
+		t.Error(`expected ttl: "5m"`)
+	}
+}
+
+func TestGenerateUserWithAllowResponsesPartial(t *testing.T) {
+	maxMsgs := 5
+	cfg := &NatsConfig{
+		Accounts: map[string]AccountConfig{
+			"svc": {
+				Users: []UserConfig{
+					{
+						NKey: "USVC3",
+						Permissions: &PermissionsConfig{
+							AllowResponses: &ResponsePermissionConfig{
+								MaxMsgs: &maxMsgs,
+							},
+						},
+					},
+				},
+			},
+		},
+	}
+	result := Generate(cfg)
+	if !strings.Contains(result, "allow_responses {") {
+		t.Error("expected structured allow_responses block")
+	}
+	if !strings.Contains(result, "max: 5") {
+		t.Error("expected max: 5")
+	}
+	if strings.Contains(result, "ttl") {
+		t.Error("should not contain ttl when not set")
+	}
+}
+
 func TestGenerateDeterministicAccountOrder(t *testing.T) {
 	cfg := &NatsConfig{
 		Accounts: map[string]AccountConfig{

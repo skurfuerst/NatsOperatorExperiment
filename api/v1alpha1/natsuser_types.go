@@ -51,6 +51,23 @@ type Permissions struct {
 	// Subscribe defines subscribe permissions.
 	// +optional
 	Subscribe *PermissionRule `json:"subscribe,omitempty"`
+
+	// AllowResponses enables or configures response permissions for request-reply.
+	// If set with no fields, emits "allow_responses: true".
+	// If MaxMsgs or TTL is set, emits the structured form.
+	// +optional
+	AllowResponses *ResponsePermission `json:"allowResponses,omitempty"`
+}
+
+// ResponsePermission configures NATS allow_responses for request-reply patterns.
+type ResponsePermission struct {
+	// MaxMsgs is the maximum number of response messages allowed.
+	// +optional
+	MaxMsgs *int `json:"maxMsgs,omitempty"`
+
+	// TTL is the time window for responses (e.g., "5m", "30s").
+	// +optional
+	TTL *string `json:"ttl,omitempty"`
 }
 
 // PermissionRule defines allowed and denied subjects.

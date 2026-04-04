@@ -143,6 +143,10 @@ func writePermissions(b *strings.Builder, perms *PermissionsConfig, indent int) 
 		writePermissionRule(b, "subscribe", perms.Subscribe, indent+1)
 	}
 
+	if perms.AllowResponses != nil {
+		writeAllowResponses(b, perms.AllowResponses, indent+1)
+	}
+
 	fmt.Fprintf(b, "%s}\n", prefix)
 }
 
@@ -159,6 +163,25 @@ func writePermissionRule(b *strings.Builder, name string, rule *PermissionRuleCo
 		fmt.Fprintf(b, "%sdeny: [%s]\n", inner, quoteStrings(rule.Deny))
 	}
 
+	fmt.Fprintf(b, "%s}\n", prefix)
+}
+
+func writeAllowResponses(b *strings.Builder, ar *ResponsePermissionConfig, indent int) {
+	prefix := strings.Repeat("  ", indent)
+	// If neither field is set, emit boolean form
+	if ar.MaxMsgs == nil && ar.TTL == nil {
+		fmt.Fprintf(b, "%sallow_responses: true\n", prefix)
+		return
+	}
+	// Structured form
+	inner := strings.Repeat("  ", indent+1)
+	fmt.Fprintf(b, "%sallow_responses {\n", prefix)
+	if ar.MaxMsgs != nil {
+		fmt.Fprintf(b, "%smax: %d\n", inner, *ar.MaxMsgs)
+	}
+	if ar.TTL != nil {
+		fmt.Fprintf(b, "%sttl: %q\n", inner, *ar.TTL)
+	}
 	fmt.Fprintf(b, "%s}\n", prefix)
 }
 

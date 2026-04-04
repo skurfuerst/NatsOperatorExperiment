@@ -175,3 +175,71 @@ func TestConvertToNatsConfigWithUsers(t *testing.T) {
 		t.Error("expected nil permissions on user 2")
 	}
 }
+
+func TestConvertToNatsConfigWithAllowResponses(t *testing.T) {
+	maxMsgs := 1
+	ttl := "5m"
+
+	accounts := []AccountWithUsers{
+		{
+			Account: natsv1alpha1.NatsAccount{
+				ObjectMeta: metav1.ObjectMeta{Name: "svc"},
+			},
+			Users: []UserWithPublicKey{
+				{
+					User: natsv1alpha1.NatsUser{
+						Spec: natsv1alpha1.NatsUserSpec{
+							Permissions: &natsv1alpha1.Permissions{
+								Publish: &natsv1alpha1.PermissionRule{
+									Allow: []string{"requests.>"},
+								},
+								AllowResponses: &natsv1alpha1.ResponsePermission{
+									MaxMsgs: &maxMsgs,
+									TTL:     &ttl,
+								},
+							},
+						},
+					},
+					PublicKey: "USVC1",
+				},
+				{
+					User: natsv1alpha1.NatsUser{
+						Spec: natsv1alpha1.NatsUserSpec{
+							Permissions: &natsv1alpha1.Permissions{
+								AllowResponses: &natsv1alpha1.ResponsePermission{},
+							},
+						},
+					},
+					PublicKey: "USVC2",
+				},
+			},
+		},
+	}
+
+	cfg := ConvertToNatsConfig(accounts)
+	acct := cfg.Accounts["svc"]
+
+	// User 1: structured allow_responses
+	u1 := acct.Users[0]
+	if u1.Permissions.AllowResponses == nil {
+		t.Fatal("expected AllowResponses on user 1")
+	}
+	if *u1.Permissions.AllowResponses.MaxMsgs != 1 {
+		t.Errorf("expected MaxMsgs 1, got %d", *u1.Permissions.AllowResponses.MaxMsgs)
+	}
+	if *u1.Permissions.AllowResponses.TTL != "5m" {
+		t.Errorf("expected TTL 5m, got %s", *u1.Permissions.AllowResponses.TTL)
+	}
+
+	// User 2: boolean allow_responses (no fields set)
+	u2 := acct.Users[1]
+	if u2.Permissions.AllowResponses == nil {
+		t.Fatal("expected AllowResponses on user 2")
+	}
+	if u2.Permissions.AllowResponses.MaxMsgs != nil {
+		t.Error("expected nil MaxMsgs for boolean form")
+	}
+	if u2.Permissions.AllowResponses.TTL != nil {
+		t.Error("expected nil TTL for boolean form")
+	}
+}

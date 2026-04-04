@@ -21,6 +21,7 @@ import (
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
+	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/meta"
 	"k8s.io/apimachinery/pkg/api/resource"
@@ -688,6 +689,182 @@ var _ = Describe("NatsCluster Controller", func() {
 			// Cleanup
 			Expect(k8sClient.Delete(ctx, user2)).To(Succeed())
 			Expect(k8sClient.Delete(ctx, account)).To(Succeed())
+			Expect(k8sClient.Delete(ctx, cluster)).To(Succeed())
+		})
+	})
+
+	Context("Reload mechanism", func() {
+		It("should annotate Deployment when serverRef is set and config changes", func() {
+			// Create a Deployment to reference
+			deploy := &appsv1.Deployment{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "nats-server",
+					Namespace: clusterNs,
+				},
+				Spec: appsv1.DeploymentSpec{
+					Selector: &metav1.LabelSelector{
+						MatchLabels: map[string]string{"app": "nats"},
+					},
+					Template: corev1.PodTemplateSpec{
+						ObjectMeta: metav1.ObjectMeta{
+							Labels: map[string]string{"app": "nats"},
+						},
+						Spec: corev1.PodSpec{
+							Containers: []corev1.Container{
+								{Name: "nats", Image: "nats:latest"},
+							},
+						},
+					},
+				},
+			}
+			Expect(k8sClient.Create(ctx, deploy)).To(Succeed())
+
+			cluster := &natsv1alpha1.NatsCluster{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      clusterName,
+					Namespace: clusterNs,
+				},
+				Spec: natsv1alpha1.NatsClusterSpec{
+					ServerRef: &natsv1alpha1.WorkloadReference{
+						Kind: "Deployment",
+						Name: "nats-server",
+					},
+				},
+			}
+			Expect(k8sClient.Create(ctx, cluster)).To(Succeed())
+
+			doReconcile()
+
+			// Verify Deployment pod template has config-hash annotation
+			Expect(k8sClient.Get(ctx, types.NamespacedName{
+				Name: "nats-server", Namespace: clusterNs,
+			}, deploy)).To(Succeed())
+			Expect(deploy.Spec.Template.Annotations).To(HaveKey("nats.k8s.sandstorm.de/config-hash"))
+			firstHash := deploy.Spec.Template.Annotations["nats.k8s.sandstorm.de/config-hash"]
+			Expect(firstHash).NotTo(BeEmpty())
+
+			// Add an account to change config
+			account := &natsv1alpha1.NatsAccount{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      accountName,
+					Namespace: clusterNs,
+				},
+				Spec: natsv1alpha1.NatsAccountSpec{
+					ClusterRef: natsv1alpha1.LocalObjectReference{Name: clusterName},
+				},
+			}
+			Expect(k8sClient.Create(ctx, account)).To(Succeed())
+
+			doReconcile()
+
+			// Verify hash changed
+			Expect(k8sClient.Get(ctx, types.NamespacedName{
+				Name: "nats-server", Namespace: clusterNs,
+			}, deploy)).To(Succeed())
+			secondHash := deploy.Spec.Template.Annotations["nats.k8s.sandstorm.de/config-hash"]
+			Expect(secondHash).NotTo(Equal(firstHash))
+
+			// Cleanup
+			Expect(k8sClient.Delete(ctx, account)).To(Succeed())
+			Expect(k8sClient.Delete(ctx, cluster)).To(Succeed())
+			Expect(k8sClient.Delete(ctx, deploy)).To(Succeed())
+		})
+
+		It("should not fail when serverRef is nil", func() {
+			cluster := &natsv1alpha1.NatsCluster{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      clusterName,
+					Namespace: clusterNs,
+				},
+			}
+			Expect(k8sClient.Create(ctx, cluster)).To(Succeed())
+
+			doReconcile()
+
+			// Should succeed without error
+			Expect(k8sClient.Get(ctx, types.NamespacedName{
+				Name: clusterName, Namespace: clusterNs,
+			}, cluster)).To(Succeed())
+			readyCond := meta.FindStatusCondition(cluster.Status.Conditions, natsv1alpha1.ConditionReady)
+			Expect(readyCond).NotTo(BeNil())
+			Expect(readyCond.Status).To(Equal(metav1.ConditionTrue))
+
+			// Cleanup
+			Expect(k8sClient.Delete(ctx, cluster)).To(Succeed())
+		})
+
+		It("should annotate StatefulSet when serverRef kind is StatefulSet", func() {
+			sts := &appsv1.StatefulSet{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "nats-sts",
+					Namespace: clusterNs,
+				},
+				Spec: appsv1.StatefulSetSpec{
+					Selector: &metav1.LabelSelector{
+						MatchLabels: map[string]string{"app": "nats"},
+					},
+					Template: corev1.PodTemplateSpec{
+						ObjectMeta: metav1.ObjectMeta{
+							Labels: map[string]string{"app": "nats"},
+						},
+						Spec: corev1.PodSpec{
+							Containers: []corev1.Container{
+								{Name: "nats", Image: "nats:latest"},
+							},
+						},
+					},
+				},
+			}
+			Expect(k8sClient.Create(ctx, sts)).To(Succeed())
+
+			cluster := &natsv1alpha1.NatsCluster{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      clusterName,
+					Namespace: clusterNs,
+				},
+				Spec: natsv1alpha1.NatsClusterSpec{
+					ServerRef: &natsv1alpha1.WorkloadReference{
+						Kind: "StatefulSet",
+						Name: "nats-sts",
+					},
+				},
+			}
+			Expect(k8sClient.Create(ctx, cluster)).To(Succeed())
+
+			doReconcile()
+
+			Expect(k8sClient.Get(ctx, types.NamespacedName{
+				Name: "nats-sts", Namespace: clusterNs,
+			}, sts)).To(Succeed())
+			Expect(sts.Spec.Template.Annotations).To(HaveKey("nats.k8s.sandstorm.de/config-hash"))
+
+			// Cleanup
+			Expect(k8sClient.Delete(ctx, cluster)).To(Succeed())
+			Expect(k8sClient.Delete(ctx, sts)).To(Succeed())
+		})
+
+		It("should set error condition when referenced workload does not exist", func() {
+			cluster := &natsv1alpha1.NatsCluster{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      clusterName,
+					Namespace: clusterNs,
+				},
+				Spec: natsv1alpha1.NatsClusterSpec{
+					ServerRef: &natsv1alpha1.WorkloadReference{
+						Kind: "Deployment",
+						Name: "nonexistent",
+					},
+				},
+			}
+			Expect(k8sClient.Create(ctx, cluster)).To(Succeed())
+
+			r := reconciler()
+			_, err := r.Reconcile(ctx, reconcile.Request{
+				NamespacedName: types.NamespacedName{Name: clusterName, Namespace: clusterNs},
+			})
+			Expect(err).To(HaveOccurred())
+
+			// Cleanup
 			Expect(k8sClient.Delete(ctx, cluster)).To(Succeed())
 		})
 	})
