@@ -26,22 +26,25 @@ type NatsUserSpec struct {
 	// Can be cross-namespace if the NatsAccount's allowedUserNamespaces permits it.
 	AccountRef NamespacedObjectReference `json:"accountRef"`
 
-	// InboxPrefix controls inbox isolation for this user's request-reply pattern.
-	//
-	// Three modes:
-	//   - Omit entirely (nil): no inbox isolation; default NATS "_INBOX.*" is used.
-	//   - Empty string "":    operator auto-generates a random prefix, stores it in the
-	//                         user's Secret under key "inbox-prefix".
-	//   - Non-empty string:   use the provided prefix, also stored in the Secret.
-	//
-	// When a prefix is active the operator automatically injects subscribe permissions:
-	//   - deny  "_INBOX.>"        (blocks the default inbox prefix)
-	//   - allow "<prefix>.>"      (permits only this user's inbox subjects)
-	//
+	// InboxPrefix overrides the auto-generated inbox prefix for this user.
+	// By default the operator generates a random prefix (e.g. "_I_ABCDE3FG4H5I6J7") and
+	// stores it in the user's Secret under key "inbox-prefix".
+	// Set this only if you need a stable, human-readable prefix instead.
+	// Has no effect when InsecureSharedInboxPrefix is true.
 	// The NATS client must use the same prefix:
 	//   nats.CustomInboxPrefix("<prefix>") in Go, or --inbox-prefix <prefix> in CLI.
 	// +optional
 	InboxPrefix *string `json:"inboxPrefix,omitempty"`
+
+	// InsecureSharedInboxPrefix disables inbox isolation for this user.
+	// When false (default), the operator auto-generates a unique inbox prefix so that
+	// other users in the same account cannot intercept this user's request-reply responses.
+	// Set to true only if you fully trust all other users in the account or do not use
+	// request-reply patterns.
+	// WARNING: setting this to true means any account-member with subscribe access to
+	// _INBOX.> can receive responses intended for this user.
+	// +optional
+	InsecureSharedInboxPrefix bool `json:"insecureSharedInboxPrefix,omitempty"`
 
 	// Permissions defines publish/subscribe permissions for this user.
 	// +optional

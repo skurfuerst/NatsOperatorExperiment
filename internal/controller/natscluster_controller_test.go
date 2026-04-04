@@ -869,6 +869,110 @@ var _ = Describe("NatsCluster Controller", func() {
 		})
 	})
 
+	Context("Inbox prefix — secure by default", func() {
+		It("should auto-generate inbox prefix and inject subscribe permissions by default", func() {
+			cluster := &natsv1alpha1.NatsCluster{
+				ObjectMeta: metav1.ObjectMeta{Name: clusterName, Namespace: clusterNs},
+			}
+			Expect(k8sClient.Create(ctx, cluster)).To(Succeed())
+			DeferCleanup(func() { k8sClient.Delete(ctx, cluster) })
+
+			account := &natsv1alpha1.NatsAccount{
+				ObjectMeta: metav1.ObjectMeta{Name: accountName, Namespace: clusterNs},
+				Spec: natsv1alpha1.NatsAccountSpec{
+					ClusterRef: natsv1alpha1.LocalObjectReference{Name: clusterName},
+				},
+			}
+			Expect(k8sClient.Create(ctx, account)).To(Succeed())
+			DeferCleanup(func() { k8sClient.Delete(ctx, account) })
+
+			// Default user — no InboxPrefix, no InsecureSharedInboxPrefix
+			user := &natsv1alpha1.NatsUser{
+				ObjectMeta: metav1.ObjectMeta{Name: userName, Namespace: clusterNs},
+				Spec: natsv1alpha1.NatsUserSpec{
+					AccountRef: natsv1alpha1.NamespacedObjectReference{Name: accountName},
+				},
+			}
+			Expect(k8sClient.Create(ctx, user)).To(Succeed())
+			DeferCleanup(func() {
+				k8sClient.Delete(ctx, user)
+				// Explicitly delete the NKey secret since envtest may not GC owned resources
+				k8sClient.Delete(ctx, &corev1.Secret{ObjectMeta: metav1.ObjectMeta{
+					Name: userName + "-nats-nkey", Namespace: clusterNs,
+				}})
+			})
+
+			doReconcile()
+
+			// Secret must contain inbox-prefix
+			secret := &corev1.Secret{}
+			Expect(k8sClient.Get(ctx, types.NamespacedName{
+				Name: userName + "-nats-nkey", Namespace: clusterNs,
+			}, secret)).To(Succeed())
+			Expect(secret.Data).To(HaveKey("inbox-prefix"))
+			prefix := string(secret.Data["inbox-prefix"])
+			Expect(prefix).NotTo(BeEmpty())
+
+			// Generated config must deny _INBOX.> and allow <prefix>.>
+			cm := &corev1.ConfigMap{}
+			Expect(k8sClient.Get(ctx, types.NamespacedName{
+				Name: configMapName, Namespace: clusterNs,
+			}, cm)).To(Succeed())
+			conf := cm.Data["auth.conf"]
+			Expect(conf).To(ContainSubstring(`"_INBOX.>"`))
+			Expect(conf).To(ContainSubstring("deny"))
+			Expect(conf).To(ContainSubstring(prefix + ".>"))
+		})
+
+		It("should skip inbox isolation when InsecureSharedInboxPrefix is true", func() {
+			cluster := &natsv1alpha1.NatsCluster{
+				ObjectMeta: metav1.ObjectMeta{Name: clusterName, Namespace: clusterNs},
+			}
+			Expect(k8sClient.Create(ctx, cluster)).To(Succeed())
+			DeferCleanup(func() { k8sClient.Delete(ctx, cluster) })
+
+			account := &natsv1alpha1.NatsAccount{
+				ObjectMeta: metav1.ObjectMeta{Name: accountName, Namespace: clusterNs},
+				Spec: natsv1alpha1.NatsAccountSpec{
+					ClusterRef: natsv1alpha1.LocalObjectReference{Name: clusterName},
+				},
+			}
+			Expect(k8sClient.Create(ctx, account)).To(Succeed())
+			DeferCleanup(func() { k8sClient.Delete(ctx, account) })
+
+			user := &natsv1alpha1.NatsUser{
+				ObjectMeta: metav1.ObjectMeta{Name: userName, Namespace: clusterNs},
+				Spec: natsv1alpha1.NatsUserSpec{
+					AccountRef:                natsv1alpha1.NamespacedObjectReference{Name: accountName},
+					InsecureSharedInboxPrefix: true,
+				},
+			}
+			Expect(k8sClient.Create(ctx, user)).To(Succeed())
+			DeferCleanup(func() {
+				k8sClient.Delete(ctx, user)
+				k8sClient.Delete(ctx, &corev1.Secret{ObjectMeta: metav1.ObjectMeta{
+					Name: userName + "-nats-nkey", Namespace: clusterNs,
+				}})
+			})
+
+			doReconcile()
+
+			// Secret must NOT contain inbox-prefix
+			secret := &corev1.Secret{}
+			Expect(k8sClient.Get(ctx, types.NamespacedName{
+				Name: userName + "-nats-nkey", Namespace: clusterNs,
+			}, secret)).To(Succeed())
+			Expect(secret.Data).NotTo(HaveKey("inbox-prefix"))
+
+			// Generated config must NOT contain any _INBOX deny rule
+			cm := &corev1.ConfigMap{}
+			Expect(k8sClient.Get(ctx, types.NamespacedName{
+				Name: configMapName, Namespace: clusterNs,
+			}, cm)).To(Succeed())
+			Expect(cm.Data["auth.conf"]).NotTo(ContainSubstring("deny"))
+		})
+	})
+
 	Context("Invalid regex on account", func() {
 		It("should set InvalidRegex condition on account and skip it", func() {
 			cluster := &natsv1alpha1.NatsCluster{

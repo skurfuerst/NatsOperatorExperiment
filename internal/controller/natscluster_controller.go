@@ -268,13 +268,13 @@ func (r *NatsClusterReconciler) patchWorkloadAnnotation(ctx context.Context, clu
 	}
 }
 
-// ensureNKeySecret ensures a Secret with NKey seed/public key (and optionally inbox prefix)
-// exists for the user. Returns the public key and resolved inbox prefix (empty if not used).
+// ensureNKeySecret ensures a Secret with NKey seed/public key (and inbox prefix) exists for
+// the user. Returns the public key and resolved inbox prefix (empty if isolation is disabled).
 //
-// Inbox prefix logic:
-//   - InboxPrefix == nil:  not stored; empty string returned
-//   - InboxPrefix == "":   auto-generated and stored under "inbox-prefix" in the Secret
-//   - InboxPrefix != "":   provided value stored under "inbox-prefix" in the Secret
+// Inbox prefix logic (secure by default):
+//   - InsecureSharedInboxPrefix == true: no inbox isolation; empty prefix returned
+//   - InboxPrefix set to non-empty:      use provided prefix, store in Secret
+//   - otherwise (default):               auto-generate random prefix, store in Secret
 func (r *NatsClusterReconciler) ensureNKeySecret(ctx context.Context, user *natsv1alpha1.NatsUser) (publicKey, inboxPrefix string, err error) {
 	secretName := user.Name + "-nats-nkey"
 	secret := &corev1.Secret{}
@@ -285,9 +285,17 @@ func (r *NatsClusterReconciler) ensureNKeySecret(ctx context.Context, user *nats
 		publicKey = string(secret.Data["nkey-public"])
 		inboxPrefix = string(secret.Data["inbox-prefix"])
 
-		// If inbox prefix is requested but not yet in the secret, add it now
 		needsUpdate := false
-		if user.Spec.InboxPrefix != nil && inboxPrefix == "" {
+		if user.Spec.InsecureSharedInboxPrefix {
+			// Isolation explicitly disabled — remove prefix if it was previously set
+			if _, hadPrefix := secret.Data["inbox-prefix"]; hadPrefix {
+				delete(secret.Data, "inbox-prefix")
+				inboxPrefix = ""
+				needsUpdate = true
+			}
+		} else if inboxPrefix == "" {
+			// Isolation wanted but prefix not yet in the secret — add it now.
+			// (Handles upgrade from pre-isolation secrets.)
 			inboxPrefix, err = r.resolveInboxPrefix(user.Spec.InboxPrefix)
 			if err != nil {
 				return "", "", err
@@ -328,8 +336,8 @@ func (r *NatsClusterReconciler) ensureNKeySecret(ctx context.Context, user *nats
 		"nkey-public": []byte(publicKey),
 	}
 
-	// Resolve and store inbox prefix if requested
-	if user.Spec.InboxPrefix != nil {
+	// Resolve and store inbox prefix unless isolation is explicitly disabled
+	if !user.Spec.InsecureSharedInboxPrefix {
 		inboxPrefix, err = r.resolveInboxPrefix(user.Spec.InboxPrefix)
 		if err != nil {
 			return "", "", err
@@ -364,14 +372,14 @@ func (r *NatsClusterReconciler) ensureNKeySecret(ctx context.Context, user *nats
 	return publicKey, inboxPrefix, nil
 }
 
-// resolveInboxPrefix returns the inbox prefix to use:
-// - if spec is "" (empty): auto-generates a random prefix
-// - if spec is non-empty: uses that value directly
-func (r *NatsClusterReconciler) resolveInboxPrefix(spec *string) (string, error) {
-	if *spec == "" {
-		return nkeysutil.GenerateInboxPrefix()
+// resolveInboxPrefix returns the inbox prefix to use.
+// If a non-empty override is provided, it is used directly.
+// Otherwise a random prefix is auto-generated.
+func (r *NatsClusterReconciler) resolveInboxPrefix(override *string) (string, error) {
+	if override != nil && *override != "" {
+		return *override, nil
 	}
-	return *spec, nil
+	return nkeysutil.GenerateInboxPrefix()
 }
 
 //nolint:unparam // status kept as parameter for consistency with setAccountCondition/setUserCondition

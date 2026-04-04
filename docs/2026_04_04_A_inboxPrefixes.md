@@ -65,32 +65,37 @@ requests.
 For request-reply services, using `allowResponses: { maxMsgs: 1 }` is the tightest
 configuration: it limits each reply-to address to exactly one response.
 
-### CRD: `inboxPrefix` on `NatsUser`
+### CRD fields on `NatsUser`
 
-The `inboxPrefix` field has three modes:
+Inbox isolation is **secure by default**. The operator auto-generates a unique inbox prefix for
+every user unless explicitly opted out.
 
 ```yaml
-# Mode 1: omit — no inbox isolation, default _INBOX.* is used (opt-out)
+# Default (secure) — prefix auto-generated, stored in Secret under "inbox-prefix"
 spec:
   accountRef: { name: my-account }
 
-# Mode 2: empty string — operator auto-generates a random prefix like _I_ABCDE3FG4H5I6J7
-# and stores it in the user Secret under "inbox-prefix"
-spec:
-  accountRef: { name: my-account }
-  inboxPrefix: ""
-
-# Mode 3: explicit prefix — use provided value, also stored in Secret
+# Optional: provide a stable human-readable prefix instead of the auto-generated one
 spec:
   accountRef: { name: my-account }
   inboxPrefix: "_INBOX_myapp"
+
+# Opt-out (insecure) — no inbox isolation; use only when all account users are trusted
+# and request-reply interception is not a concern
+spec:
+  accountRef: { name: my-account }
+  insecureSharedInboxPrefix: true
 ```
 
-In modes 2 and 3, the operator **automatically injects** subscribe permissions:
+When a prefix is active (default and explicit cases) the operator **automatically injects**
+subscribe permissions:
 - `deny: ["_INBOX.>"]` — prevents listening on default inbox subjects
 - `allow: ["<prefix>.>"]` — permits listening on the custom inbox prefix
 
 These are merged with any user-specified allow/deny rules; existing entries are not duplicated.
+
+If `insecureSharedInboxPrefix` is later changed back to `false` (or removed), the operator
+will auto-generate a prefix on the next reconcile and update the Secret accordingly.
 
 ### Secret layout
 
@@ -100,7 +105,7 @@ When a prefix is in use the user Secret gains an `inbox-prefix` key:
 <username>-nats-nkey:
   nkey-seed:    SUABC...      # NKey seed
   nkey-public:  UABC...       # NKey public key
-  inbox-prefix: _I_ABCDE3FG   # custom inbox prefix (absent if inboxPrefix: nil)
+  inbox-prefix: _I_ABCDE3FG   # custom inbox prefix (absent only if insecureSharedInboxPrefix: true)
 ```
 
 The client can mount this Secret and load the prefix from an environment variable:
