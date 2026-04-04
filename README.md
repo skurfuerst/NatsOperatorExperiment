@@ -75,7 +75,7 @@ spec:
 
 | Field | Type | Description |
 |-------|------|-------------|
-| `spec.serverRef` | `WorkloadReference` | Optional. References a Deployment or StatefulSet to annotate on config changes, triggering a rolling restart. |
+| `spec.serverRef` | `WorkloadReference` | Optional. References a Deployment or StatefulSet whose pods receive a SIGHUP signal on config changes, triggering a live NATS server config reload without restarting pods. |
 | `status.accountCount` | `int` | Number of accounts linked to this cluster. |
 | `status.userCount` | `int` | Total users across all accounts. |
 | `status.lastConfigHash` | `string` | SHA256 of the last generated config. |
@@ -307,7 +307,7 @@ To use the seed in a NATS client, mount the Secret and pass it via the `nkey` op
 
 ## Reload Mechanism
 
-When `spec.serverRef` is set on a NatsCluster, the operator annotates the referenced Deployment or StatefulSet's pod template with the config hash whenever the auth config changes. This triggers a rolling restart, causing NATS pods to remount the updated ConfigMap.
+When `spec.serverRef` is set on a NatsCluster, the operator sends a `SIGHUP` signal to every Running pod of the referenced Deployment or StatefulSet whenever the auth config changes. NATS server responds to `SIGHUP` by reloading its configuration in-place — clients stay connected and no pods are restarted.
 
 ```yaml
 apiVersion: nats.k8s.sandstorm.de/v1alpha1
@@ -321,7 +321,7 @@ spec:
     namespace: nats      # optional, defaults to cluster's namespace
 ```
 
-The annotation `nats.k8s.sandstorm.de/config-hash` is set on `spec.template.metadata.annotations`, so only config changes trigger restarts. No-op reconciliations leave the workload untouched.
+The operator does this by exec-ing `kill -HUP 1` in each Running pod (NATS server is assumed to run as PID 1). Pods that are not in the `Running` phase are skipped; they will pick up the updated ConfigMap when they start. No-op reconciliations (config unchanged) leave pods untouched.
 
 ## CLI Tool
 

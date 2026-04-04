@@ -32,6 +32,17 @@ import (
 	natsv1alpha1 "github.com/skurfuerst/natsoperatorexperiment/api/v1alpha1"
 )
 
+// fakePodReloader records which pods received a SIGHUP reload call.
+type fakePodReloader struct {
+	reloadedPods []string
+	err          error
+}
+
+func (f *fakePodReloader) ReloadPod(_ context.Context, namespace, podName string) error {
+	f.reloadedPods = append(f.reloadedPods, namespace+"/"+podName)
+	return f.err
+}
+
 var _ = Describe("NatsCluster Controller", func() {
 	const (
 		clusterName   = "test-cluster"
@@ -694,8 +705,44 @@ var _ = Describe("NatsCluster Controller", func() {
 	})
 
 	Context("Reload mechanism", func() {
-		It("should annotate Deployment when serverRef is set and config changes", func() {
-			// Create a Deployment to reference
+		var fakeReloader *fakePodReloader
+
+		BeforeEach(func() {
+			fakeReloader = &fakePodReloader{}
+		})
+
+		doReconcileWithReloader := func() {
+			r := &NatsClusterReconciler{
+				Client:      k8sClient,
+				Scheme:      k8sClient.Scheme(),
+				PodReloader: fakeReloader,
+			}
+			_, err := r.Reconcile(ctx, reconcile.Request{
+				NamespacedName: types.NamespacedName{Name: clusterName, Namespace: clusterNs},
+			})
+			Expect(err).NotTo(HaveOccurred())
+		}
+
+		createRunningPod := func(name string, labels map[string]string) *corev1.Pod {
+			pod := &corev1.Pod{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      name,
+					Namespace: clusterNs,
+					Labels:    labels,
+				},
+				Spec: corev1.PodSpec{
+					Containers: []corev1.Container{
+						{Name: "nats", Image: "nats:latest"},
+					},
+				},
+			}
+			Expect(k8sClient.Create(ctx, pod)).To(Succeed())
+			pod.Status.Phase = corev1.PodRunning
+			Expect(k8sClient.Status().Update(ctx, pod)).To(Succeed())
+			return pod
+		}
+
+		It("should send SIGHUP to Deployment pods when serverRef is set and config changes", func() {
 			deploy := &appsv1.Deployment{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      "nats-server",
@@ -719,6 +766,8 @@ var _ = Describe("NatsCluster Controller", func() {
 			}
 			Expect(k8sClient.Create(ctx, deploy)).To(Succeed())
 
+			pod := createRunningPod("nats-pod-0", map[string]string{"app": "nats"})
+
 			cluster := &natsv1alpha1.NatsCluster{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      clusterName,
@@ -733,15 +782,10 @@ var _ = Describe("NatsCluster Controller", func() {
 			}
 			Expect(k8sClient.Create(ctx, cluster)).To(Succeed())
 
-			doReconcile()
+			doReconcileWithReloader()
 
-			// Verify Deployment pod template has config-hash annotation
-			Expect(k8sClient.Get(ctx, types.NamespacedName{
-				Name: "nats-server", Namespace: clusterNs,
-			}, deploy)).To(Succeed())
-			Expect(deploy.Spec.Template.Annotations).To(HaveKey("nats.k8s.sandstorm.de/config-hash"))
-			firstHash := deploy.Spec.Template.Annotations["nats.k8s.sandstorm.de/config-hash"]
-			Expect(firstHash).NotTo(BeEmpty())
+			// SIGHUP should have been sent to the running pod on first reconcile
+			Expect(fakeReloader.reloadedPods).To(ConsistOf(clusterNs + "/nats-pod-0"))
 
 			// Add an account to change config
 			account := &natsv1alpha1.NatsAccount{
@@ -755,16 +799,14 @@ var _ = Describe("NatsCluster Controller", func() {
 			}
 			Expect(k8sClient.Create(ctx, account)).To(Succeed())
 
-			doReconcile()
+			doReconcileWithReloader()
 
-			// Verify hash changed
-			Expect(k8sClient.Get(ctx, types.NamespacedName{
-				Name: "nats-server", Namespace: clusterNs,
-			}, deploy)).To(Succeed())
-			secondHash := deploy.Spec.Template.Annotations["nats.k8s.sandstorm.de/config-hash"]
-			Expect(secondHash).NotTo(Equal(firstHash))
+			// SIGHUP should have been sent again for the config change
+			Expect(fakeReloader.reloadedPods).To(HaveLen(2))
+			Expect(fakeReloader.reloadedPods[1]).To(Equal(clusterNs + "/nats-pod-0"))
 
 			// Cleanup
+			Expect(k8sClient.Delete(ctx, pod)).To(Succeed())
 			Expect(k8sClient.Delete(ctx, account)).To(Succeed())
 			Expect(k8sClient.Delete(ctx, cluster)).To(Succeed())
 			Expect(k8sClient.Delete(ctx, deploy)).To(Succeed())
@@ -779,21 +821,20 @@ var _ = Describe("NatsCluster Controller", func() {
 			}
 			Expect(k8sClient.Create(ctx, cluster)).To(Succeed())
 
-			doReconcile()
+			doReconcileWithReloader()
 
-			// Should succeed without error
 			Expect(k8sClient.Get(ctx, types.NamespacedName{
 				Name: clusterName, Namespace: clusterNs,
 			}, cluster)).To(Succeed())
 			readyCond := meta.FindStatusCondition(cluster.Status.Conditions, natsv1alpha1.ConditionReady)
 			Expect(readyCond).NotTo(BeNil())
 			Expect(readyCond.Status).To(Equal(metav1.ConditionTrue))
+			Expect(fakeReloader.reloadedPods).To(BeEmpty())
 
-			// Cleanup
 			Expect(k8sClient.Delete(ctx, cluster)).To(Succeed())
 		})
 
-		It("should annotate StatefulSet when serverRef kind is StatefulSet", func() {
+		It("should send SIGHUP to StatefulSet pods when serverRef kind is StatefulSet", func() {
 			sts := &appsv1.StatefulSet{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      "nats-sts",
@@ -801,11 +842,11 @@ var _ = Describe("NatsCluster Controller", func() {
 				},
 				Spec: appsv1.StatefulSetSpec{
 					Selector: &metav1.LabelSelector{
-						MatchLabels: map[string]string{"app": "nats"},
+						MatchLabels: map[string]string{"app": "nats-sts"},
 					},
 					Template: corev1.PodTemplateSpec{
 						ObjectMeta: metav1.ObjectMeta{
-							Labels: map[string]string{"app": "nats"},
+							Labels: map[string]string{"app": "nats-sts"},
 						},
 						Spec: corev1.PodSpec{
 							Containers: []corev1.Container{
@@ -816,6 +857,8 @@ var _ = Describe("NatsCluster Controller", func() {
 				},
 			}
 			Expect(k8sClient.Create(ctx, sts)).To(Succeed())
+
+			pod := createRunningPod("nats-sts-0", map[string]string{"app": "nats-sts"})
 
 			cluster := &natsv1alpha1.NatsCluster{
 				ObjectMeta: metav1.ObjectMeta{
@@ -831,16 +874,76 @@ var _ = Describe("NatsCluster Controller", func() {
 			}
 			Expect(k8sClient.Create(ctx, cluster)).To(Succeed())
 
-			doReconcile()
+			doReconcileWithReloader()
 
-			Expect(k8sClient.Get(ctx, types.NamespacedName{
-				Name: "nats-sts", Namespace: clusterNs,
-			}, sts)).To(Succeed())
-			Expect(sts.Spec.Template.Annotations).To(HaveKey("nats.k8s.sandstorm.de/config-hash"))
+			Expect(fakeReloader.reloadedPods).To(ConsistOf(clusterNs + "/nats-sts-0"))
 
-			// Cleanup
+			Expect(k8sClient.Delete(ctx, pod)).To(Succeed())
 			Expect(k8sClient.Delete(ctx, cluster)).To(Succeed())
 			Expect(k8sClient.Delete(ctx, sts)).To(Succeed())
+		})
+
+		It("should skip non-running pods during reload", func() {
+			deploy := &appsv1.Deployment{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "nats-server",
+					Namespace: clusterNs,
+				},
+				Spec: appsv1.DeploymentSpec{
+					Selector: &metav1.LabelSelector{
+						MatchLabels: map[string]string{"app": "nats-pending"},
+					},
+					Template: corev1.PodTemplateSpec{
+						ObjectMeta: metav1.ObjectMeta{
+							Labels: map[string]string{"app": "nats-pending"},
+						},
+						Spec: corev1.PodSpec{
+							Containers: []corev1.Container{
+								{Name: "nats", Image: "nats:latest"},
+							},
+						},
+					},
+				},
+			}
+			Expect(k8sClient.Create(ctx, deploy)).To(Succeed())
+
+			// Create a pod that is NOT running (phase will be empty/Pending)
+			pod := &corev1.Pod{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "nats-pending-0",
+					Namespace: clusterNs,
+					Labels:    map[string]string{"app": "nats-pending"},
+				},
+				Spec: corev1.PodSpec{
+					Containers: []corev1.Container{
+						{Name: "nats", Image: "nats:latest"},
+					},
+				},
+			}
+			Expect(k8sClient.Create(ctx, pod)).To(Succeed())
+
+			cluster := &natsv1alpha1.NatsCluster{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      clusterName,
+					Namespace: clusterNs,
+				},
+				Spec: natsv1alpha1.NatsClusterSpec{
+					ServerRef: &natsv1alpha1.WorkloadReference{
+						Kind: "Deployment",
+						Name: "nats-server",
+					},
+				},
+			}
+			Expect(k8sClient.Create(ctx, cluster)).To(Succeed())
+
+			doReconcileWithReloader()
+
+			// No SIGHUP should have been sent (pod is not running)
+			Expect(fakeReloader.reloadedPods).To(BeEmpty())
+
+			Expect(k8sClient.Delete(ctx, pod)).To(Succeed())
+			Expect(k8sClient.Delete(ctx, cluster)).To(Succeed())
+			Expect(k8sClient.Delete(ctx, deploy)).To(Succeed())
 		})
 
 		It("should set error condition when referenced workload does not exist", func() {
@@ -858,13 +961,16 @@ var _ = Describe("NatsCluster Controller", func() {
 			}
 			Expect(k8sClient.Create(ctx, cluster)).To(Succeed())
 
-			r := reconciler()
+			r := &NatsClusterReconciler{
+				Client:      k8sClient,
+				Scheme:      k8sClient.Scheme(),
+				PodReloader: fakeReloader,
+			}
 			_, err := r.Reconcile(ctx, reconcile.Request{
 				NamespacedName: types.NamespacedName{Name: clusterName, Namespace: clusterNs},
 			})
 			Expect(err).To(HaveOccurred())
 
-			// Cleanup
 			Expect(k8sClient.Delete(ctx, cluster)).To(Succeed())
 		})
 	})
