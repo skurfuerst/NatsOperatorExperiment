@@ -27,6 +27,7 @@ import (
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	natsv1alpha1 "github.com/skurfuerst/natsoperatorexperiment/api/v1alpha1"
@@ -1312,6 +1313,116 @@ var _ = Describe("NatsCluster Controller", func() {
 			Expect(k8sClient.Delete(ctx, deniedUser)).To(Succeed())
 			Expect(k8sClient.Delete(ctx, account)).To(Succeed())
 			Expect(k8sClient.Delete(ctx, cluster)).To(Succeed())
+		})
+	})
+
+	Context("Inbox prefix — secure by default", func() {
+		It("should auto-generate inbox prefix and inject subscribe permissions by default", func() {
+			cluster := &natsv1alpha1.NatsCluster{
+				ObjectMeta: metav1.ObjectMeta{Name: clusterName, Namespace: clusterNs},
+			}
+			Expect(k8sClient.Create(ctx, cluster)).To(Succeed())
+			DeferCleanup(func() { Expect(k8sClient.Delete(ctx, cluster)).To(Succeed()) })
+
+			account := &natsv1alpha1.NatsAccount{
+				ObjectMeta: metav1.ObjectMeta{Name: accountName, Namespace: clusterNs},
+				Spec: natsv1alpha1.NatsAccountSpec{
+					ClusterRef: natsv1alpha1.LocalObjectReference{Name: clusterName},
+					UserRules: []natsv1alpha1.UserRule{
+						{Action: natsv1alpha1.UserRuleActionGrant, SameNamespace: ptr(true)},
+					},
+				},
+			}
+			Expect(k8sClient.Create(ctx, account)).To(Succeed())
+			DeferCleanup(func() { Expect(k8sClient.Delete(ctx, account)).To(Succeed()) })
+
+			// Default user — no InboxPrefix, no InsecureSharedInboxPrefix
+			user := &natsv1alpha1.NatsUser{
+				ObjectMeta: metav1.ObjectMeta{Name: userName, Namespace: clusterNs},
+				Spec: natsv1alpha1.NatsUserSpec{
+					AccountRef: natsv1alpha1.NamespacedObjectReference{Name: accountName},
+				},
+			}
+			Expect(k8sClient.Create(ctx, user)).To(Succeed())
+			DeferCleanup(func() {
+				Expect(k8sClient.Delete(ctx, user)).To(Succeed())
+				// Explicitly delete the NKey secret since envtest may not GC owned resources
+				Expect(client.IgnoreNotFound(k8sClient.Delete(ctx, &corev1.Secret{ObjectMeta: metav1.ObjectMeta{
+					Name: userName + "-nats-nkey", Namespace: clusterNs,
+				}}))).To(Succeed())
+			})
+
+			doReconcile()
+
+			// Secret must contain inbox-prefix
+			secret := &corev1.Secret{}
+			Expect(k8sClient.Get(ctx, types.NamespacedName{
+				Name: userName + "-nats-nkey", Namespace: clusterNs,
+			}, secret)).To(Succeed())
+			Expect(secret.Data).To(HaveKey("inbox-prefix"))
+			prefix := string(secret.Data["inbox-prefix"])
+			Expect(prefix).NotTo(BeEmpty())
+
+			// Generated config must deny _INBOX.> and allow <prefix>.>
+			cm := &corev1.ConfigMap{}
+			Expect(k8sClient.Get(ctx, types.NamespacedName{
+				Name: configMapName, Namespace: clusterNs,
+			}, cm)).To(Succeed())
+			conf := cm.Data["auth.conf"]
+			Expect(conf).To(ContainSubstring(`"_INBOX.>"`))
+			Expect(conf).To(ContainSubstring("deny"))
+			Expect(conf).To(ContainSubstring(prefix + ".>"))
+		})
+
+		It("should skip inbox isolation when InsecureSharedInboxPrefix is true", func() {
+			cluster := &natsv1alpha1.NatsCluster{
+				ObjectMeta: metav1.ObjectMeta{Name: clusterName, Namespace: clusterNs},
+			}
+			Expect(k8sClient.Create(ctx, cluster)).To(Succeed())
+			DeferCleanup(func() { Expect(k8sClient.Delete(ctx, cluster)).To(Succeed()) })
+
+			account := &natsv1alpha1.NatsAccount{
+				ObjectMeta: metav1.ObjectMeta{Name: accountName, Namespace: clusterNs},
+				Spec: natsv1alpha1.NatsAccountSpec{
+					ClusterRef: natsv1alpha1.LocalObjectReference{Name: clusterName},
+					UserRules: []natsv1alpha1.UserRule{
+						{Action: natsv1alpha1.UserRuleActionGrant, SameNamespace: ptr(true)},
+					},
+				},
+			}
+			Expect(k8sClient.Create(ctx, account)).To(Succeed())
+			DeferCleanup(func() { Expect(k8sClient.Delete(ctx, account)).To(Succeed()) })
+
+			user := &natsv1alpha1.NatsUser{
+				ObjectMeta: metav1.ObjectMeta{Name: userName, Namespace: clusterNs},
+				Spec: natsv1alpha1.NatsUserSpec{
+					AccountRef:                natsv1alpha1.NamespacedObjectReference{Name: accountName},
+					InsecureSharedInboxPrefix: true,
+				},
+			}
+			Expect(k8sClient.Create(ctx, user)).To(Succeed())
+			DeferCleanup(func() {
+				Expect(k8sClient.Delete(ctx, user)).To(Succeed())
+				Expect(client.IgnoreNotFound(k8sClient.Delete(ctx, &corev1.Secret{ObjectMeta: metav1.ObjectMeta{
+					Name: userName + "-nats-nkey", Namespace: clusterNs,
+				}}))).To(Succeed())
+			})
+
+			doReconcile()
+
+			// Secret must NOT contain inbox-prefix
+			secret := &corev1.Secret{}
+			Expect(k8sClient.Get(ctx, types.NamespacedName{
+				Name: userName + "-nats-nkey", Namespace: clusterNs,
+			}, secret)).To(Succeed())
+			Expect(secret.Data).NotTo(HaveKey("inbox-prefix"))
+
+			// Generated config must NOT contain any _INBOX deny rule
+			cm := &corev1.ConfigMap{}
+			Expect(k8sClient.Get(ctx, types.NamespacedName{
+				Name: configMapName, Namespace: clusterNs,
+			}, cm)).To(Succeed())
+			Expect(cm.Data["auth.conf"]).NotTo(ContainSubstring("deny"))
 		})
 	})
 

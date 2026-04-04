@@ -128,7 +128,9 @@ func runValidate(cmd *cobra.Command, args []string) error {
 					errs = append(errs, validationError{
 						Resource: "NatsUser",
 						Name:     user.Name,
-						Message:  fmt.Sprintf("namespace %q denied by account %q userRules (or no evaluable rule matched)", userNs, acct.Name),
+						Message: fmt.Sprintf(
+							"namespace %q denied by account %q userRules (or no evaluable rule matched)",
+							userNs, acct.Name),
 					})
 				}
 			}

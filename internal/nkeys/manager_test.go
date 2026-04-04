@@ -50,6 +50,30 @@ func TestGenerateUserNKeySeedReconstructsPublicKey(t *testing.T) {
 	}
 }
 
+func TestGenerateInboxPrefix(t *testing.T) {
+	prefix, err := GenerateInboxPrefix()
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !strings.HasPrefix(prefix, "_I_") {
+		t.Errorf("inbox prefix should start with _I_, got %q", prefix)
+	}
+	// Must not contain dots, wildcards, or spaces (NATS subject token rules)
+	for _, ch := range prefix {
+		if ch == '.' || ch == '>' || ch == '*' || ch == ' ' {
+			t.Errorf("inbox prefix contains invalid character %q: %q", string(ch), prefix)
+		}
+	}
+}
+
+func TestGenerateInboxPrefixUniqueness(t *testing.T) {
+	p1, _ := GenerateInboxPrefix()
+	p2, _ := GenerateInboxPrefix()
+	if p1 == p2 {
+		t.Error("two generated inbox prefixes should be unique")
+	}
+}
+
 func TestGenerateUserNKeyUniqueness(t *testing.T) {
 	key1, _, err := GenerateUserNKey()
 	if err != nil {

@@ -176,6 +176,132 @@ func TestConvertToNatsConfigWithUsers(t *testing.T) {
 	}
 }
 
+func TestConvertInboxPrefixInjectsSubscribeRules(t *testing.T) {
+	accounts := []AccountWithUsers{
+		{
+			Account: natsv1alpha1.NatsAccount{
+				ObjectMeta: metav1.ObjectMeta{Name: "app"},
+			},
+			Users: []UserWithPublicKey{
+				{
+					User:        natsv1alpha1.NatsUser{},
+					PublicKey:   "UINBOX1",
+					InboxPrefix: "_INBOX_myapp",
+				},
+			},
+		},
+	}
+
+	cfg := ConvertToNatsConfig(accounts)
+	user := cfg.Accounts["app"].Users[0]
+	if user.Permissions == nil {
+		t.Fatal("expected permissions to be set")
+	}
+	sub := user.Permissions.Subscribe
+	if sub == nil {
+		t.Fatal("expected subscribe permissions to be set")
+	}
+	if !containsString(sub.Deny, "_INBOX.>") {
+		t.Errorf("expected _INBOX.> in subscribe deny, got: %v", sub.Deny)
+	}
+	if !containsString(sub.Allow, "_INBOX_myapp.>") {
+		t.Errorf("expected _INBOX_myapp.> in subscribe allow, got: %v", sub.Allow)
+	}
+}
+
+func TestConvertInboxPrefixMergesWithExistingSubscribePermissions(t *testing.T) {
+	accounts := []AccountWithUsers{
+		{
+			Account: natsv1alpha1.NatsAccount{
+				ObjectMeta: metav1.ObjectMeta{Name: "app"},
+			},
+			Users: []UserWithPublicKey{
+				{
+					User: natsv1alpha1.NatsUser{
+						Spec: natsv1alpha1.NatsUserSpec{
+							Permissions: &natsv1alpha1.Permissions{
+								Subscribe: &natsv1alpha1.PermissionRule{
+									Allow: []string{"events.>"},
+									Deny:  []string{"admin.>"},
+								},
+							},
+						},
+					},
+					PublicKey:   "UALICE1",
+					InboxPrefix: "_INBOX_alice",
+				},
+			},
+		},
+	}
+
+	cfg := ConvertToNatsConfig(accounts)
+	sub := cfg.Accounts["app"].Users[0].Permissions.Subscribe
+
+	// Should contain the existing user-specified entries
+	if !containsString(sub.Allow, "events.>") {
+		t.Error("expected existing events.> in subscribe allow")
+	}
+	if !containsString(sub.Deny, "admin.>") {
+		t.Error("expected existing admin.> in subscribe deny")
+	}
+	// Plus the auto-injected inbox entries
+	if !containsString(sub.Allow, "_INBOX_alice.>") {
+		t.Errorf("expected _INBOX_alice.> in subscribe allow, got: %v", sub.Allow)
+	}
+	if !containsString(sub.Deny, "_INBOX.>") {
+		t.Errorf("expected _INBOX.> in subscribe deny, got: %v", sub.Deny)
+	}
+}
+
+func TestConvertInboxPrefixNoDuplicateIfAlreadySet(t *testing.T) {
+	accounts := []AccountWithUsers{
+		{
+			Account: natsv1alpha1.NatsAccount{
+				ObjectMeta: metav1.ObjectMeta{Name: "app"},
+			},
+			Users: []UserWithPublicKey{
+				{
+					User: natsv1alpha1.NatsUser{
+						Spec: natsv1alpha1.NatsUserSpec{
+							Permissions: &natsv1alpha1.Permissions{
+								Subscribe: &natsv1alpha1.PermissionRule{
+									Allow: []string{"_INBOX_bob.>"},
+									Deny:  []string{"_INBOX.>"},
+								},
+							},
+						},
+					},
+					PublicKey:   "UBOB1",
+					InboxPrefix: "_INBOX_bob",
+				},
+			},
+		},
+	}
+
+	cfg := ConvertToNatsConfig(accounts)
+	sub := cfg.Accounts["app"].Users[0].Permissions.Subscribe
+
+	allowCount := 0
+	for _, v := range sub.Allow {
+		if v == "_INBOX_bob.>" {
+			allowCount++
+		}
+	}
+	if allowCount != 1 {
+		t.Errorf("expected exactly 1 _INBOX_bob.> in allow, got %d", allowCount)
+	}
+
+	denyCount := 0
+	for _, v := range sub.Deny {
+		if v == "_INBOX.>" {
+			denyCount++
+		}
+	}
+	if denyCount != 1 {
+		t.Errorf("expected exactly 1 _INBOX.> in deny, got %d", denyCount)
+	}
+}
+
 func TestConvertToNatsConfigWithAllowResponses(t *testing.T) {
 	maxMsgs := 1
 	ttl := "5m"

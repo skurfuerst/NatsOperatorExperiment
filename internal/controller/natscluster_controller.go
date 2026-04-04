@@ -154,8 +154,8 @@ func (r *NatsClusterReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 				continue
 			}
 
-			// Ensure NKey secret exists
-			publicKey, err := r.ensureNKeySecret(ctx, user)
+			// Ensure NKey secret exists (also handles inbox prefix if requested)
+			publicKey, inboxPrefix, err := r.ensureNKeySecret(ctx, user)
 			if err != nil {
 				log.Error(err, "failed to ensure NKey secret", "user", user.Name)
 				return ctrl.Result{}, err
@@ -165,8 +165,9 @@ func (r *NatsClusterReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 			r.setUserCondition(ctx, user, metav1.ConditionTrue, natsv1alpha1.ReasonReconciled, "User reconciled successfully")
 
 			usersWithKeys = append(usersWithKeys, natsconfig.UserWithPublicKey{
-				User:      *user,
-				PublicKey: publicKey,
+				User:        *user,
+				PublicKey:   publicKey,
+				InboxPrefix: inboxPrefix,
 			})
 		}
 
@@ -294,37 +295,81 @@ func (r *NatsClusterReconciler) reloadNatsPods(ctx context.Context, cluster *nat
 	return nil
 }
 
-// ensureNKeySecret ensures a Secret with NKey seed/public key exists for the user.
-// Returns the public key.
-func (r *NatsClusterReconciler) ensureNKeySecret(ctx context.Context, user *natsv1alpha1.NatsUser) (string, error) {
+// ensureNKeySecret ensures a Secret with NKey seed/public key (and inbox prefix) exists for
+// the user. Returns the public key and resolved inbox prefix (empty if isolation is disabled).
+//
+// Inbox prefix logic (secure by default):
+//   - InsecureSharedInboxPrefix == true: no inbox isolation; empty prefix returned
+//   - InboxPrefix set to non-empty:      use provided prefix, store in Secret
+//   - otherwise (default):               auto-generate random prefix, store in Secret
+func (r *NatsClusterReconciler) ensureNKeySecret(ctx context.Context, user *natsv1alpha1.NatsUser) (publicKey, inboxPrefix string, err error) {
 	secretName := user.Name + "-nats-nkey"
 	secret := &corev1.Secret{}
-	err := r.Get(ctx, types.NamespacedName{Name: secretName, Namespace: user.Namespace}, secret)
+	getErr := r.Get(ctx, types.NamespacedName{Name: secretName, Namespace: user.Namespace}, secret)
 
-	if err == nil {
-		// Secret exists, return public key
-		publicKey := string(secret.Data["nkey-public"])
+	if getErr == nil {
+		// Secret exists — read existing values
+		publicKey = string(secret.Data["nkey-public"])
+		inboxPrefix = string(secret.Data["inbox-prefix"])
+
+		needsUpdate := false
+		if user.Spec.InsecureSharedInboxPrefix {
+			// Isolation explicitly disabled — remove prefix if it was previously set
+			if _, hadPrefix := secret.Data["inbox-prefix"]; hadPrefix {
+				delete(secret.Data, "inbox-prefix")
+				inboxPrefix = ""
+				needsUpdate = true
+			}
+		} else if inboxPrefix == "" {
+			// Isolation wanted but prefix not yet in the secret — add it now.
+			// (Handles upgrade from pre-isolation secrets.)
+			inboxPrefix, err = r.resolveInboxPrefix(user.Spec.InboxPrefix)
+			if err != nil {
+				return "", "", err
+			}
+			secret.Data["inbox-prefix"] = []byte(inboxPrefix)
+			needsUpdate = true
+		}
+		if needsUpdate {
+			if err := r.Update(ctx, secret); err != nil {
+				return "", "", err
+			}
+		}
 
 		// Update user status if needed
 		if user.Status.NKeyPublicKey != publicKey || user.Status.SecretRef == nil || user.Status.SecretRef.Name != secretName {
 			user.Status.NKeyPublicKey = publicKey
 			user.Status.SecretRef = &natsv1alpha1.SecretReference{Name: secretName}
 			if err := r.Status().Update(ctx, user); err != nil {
-				return "", err
+				return "", "", err
 			}
 		}
 
-		return publicKey, nil
+		return publicKey, inboxPrefix, nil
 	}
 
-	if !errors.IsNotFound(err) {
-		return "", err
+	if !errors.IsNotFound(getErr) {
+		return "", "", getErr
 	}
 
 	// Generate new NKey
 	publicKey, seed, err := nkeysutil.GenerateUserNKey()
 	if err != nil {
-		return "", fmt.Errorf("generating nkey: %w", err)
+		return "", "", fmt.Errorf("generating nkey: %w", err)
+	}
+
+	secretData := map[string][]byte{
+		"nkey-seed":   seed,
+		"nkey-public": []byte(publicKey),
+	}
+
+	// Resolve and store inbox prefix unless isolation is explicitly disabled
+	if !user.Spec.InsecureSharedInboxPrefix {
+		inboxPrefix, err = r.resolveInboxPrefix(user.Spec.InboxPrefix)
+		if err != nil {
+			return "", "", err
+		}
+		secretData["inbox-prefix"] = []byte(inboxPrefix)
 	}
 
 	// Create Secret
@@ -333,28 +378,35 @@ func (r *NatsClusterReconciler) ensureNKeySecret(ctx context.Context, user *nats
 			Name:      secretName,
 			Namespace: user.Namespace,
 		},
-		Data: map[string][]byte{
-			"nkey-seed":   seed,
-			"nkey-public": []byte(publicKey),
-		},
+		Data: secretData,
 	}
 
 	if err := controllerutil.SetOwnerReference(user, secret, r.Scheme); err != nil {
-		return "", err
+		return "", "", err
 	}
 
 	if err := r.Create(ctx, secret); err != nil {
-		return "", err
+		return "", "", err
 	}
 
 	// Update user status
 	user.Status.NKeyPublicKey = publicKey
 	user.Status.SecretRef = &natsv1alpha1.SecretReference{Name: secretName}
 	if err := r.Status().Update(ctx, user); err != nil {
-		return "", err
+		return "", "", err
 	}
 
-	return publicKey, nil
+	return publicKey, inboxPrefix, nil
+}
+
+// resolveInboxPrefix returns the inbox prefix to use.
+// If a non-empty override is provided, it is used directly.
+// Otherwise a random prefix is auto-generated.
+func (r *NatsClusterReconciler) resolveInboxPrefix(override *string) (string, error) {
+	if override != nil && *override != "" {
+		return *override, nil
+	}
+	return nkeysutil.GenerateInboxPrefix()
 }
 
 //nolint:unparam // status kept as parameter for consistency with setAccountCondition/setUserCondition

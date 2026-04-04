@@ -400,6 +400,36 @@ func TestGenerateUserWithAllowResponsesDisabled(t *testing.T) {
 	}
 }
 
+func TestGenerateUserWithInboxPrefixSubscribeRules(t *testing.T) {
+	cfg := &NatsConfig{
+		Accounts: map[string]AccountConfig{
+			"app": {
+				Users: []UserConfig{
+					{
+						NKey: "UINBOX1",
+						Permissions: &PermissionsConfig{
+							Subscribe: &PermissionRuleConfig{
+								Allow: []string{"events.>", "_INBOX_myapp.>"},
+								Deny:  []string{"_INBOX.>"},
+							},
+						},
+					},
+				},
+			},
+		},
+	}
+	result := Generate(cfg)
+	if !strings.Contains(result, `"_INBOX_myapp.>"`) {
+		t.Error("expected _INBOX_myapp.> in subscribe allow")
+	}
+	if !strings.Contains(result, `"_INBOX.>"`) {
+		t.Error("expected _INBOX.> in subscribe deny")
+	}
+	if !strings.Contains(result, "deny") {
+		t.Error("expected deny block in subscribe permissions")
+	}
+}
+
 func TestGenerateDeterministicAccountOrder(t *testing.T) {
 	cfg := &NatsConfig{
 		Accounts: map[string]AccountConfig{

@@ -423,6 +423,11 @@ func (in *NatsUserList) DeepCopyObject() runtime.Object {
 func (in *NatsUserSpec) DeepCopyInto(out *NatsUserSpec) {
 	*out = *in
 	out.AccountRef = in.AccountRef
+	if in.InboxPrefix != nil {
+		in, out := &in.InboxPrefix, &out.InboxPrefix
+		*out = new(string)
+		**out = **in
+	}
 	if in.Permissions != nil {
 		in, out := &in.Permissions, &out.Permissions
 		*out = new(Permissions)
