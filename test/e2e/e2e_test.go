@@ -22,6 +22,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"time"
 
 	. "github.com/onsi/ginkgo/v2"
@@ -257,15 +258,236 @@ var _ = Describe("Manager", Ordered, func() {
 		})
 
 		// +kubebuilder:scaffold:e2e-webhooks-checks
+	})
 
-		// TODO: Customize the e2e test suite with scenarios specific to your project.
-		// Consider applying sample/CR(s) and check their status and/or verifying
-		// the reconciliation by using the metrics, i.e.:
-		// metricsOutput := getMetricsOutput()
-		// Expect(metricsOutput).To(ContainSubstring(
-		//    fmt.Sprintf(`controller_runtime_reconcile_total{controller="%s",result="success"} 1`,
-		//    strings.ToLower(<Kind>),
-		// ))
+	Context("NATS Operator", func() {
+		It("should create a ConfigMap for a NatsCluster", func() {
+			By("creating a NatsCluster")
+			cmd := exec.Command("kubectl", "apply", "-n", namespace, "-f", "-")
+			cmd.Stdin = strings.NewReader(`
+apiVersion: nats.k8s.sandstorm.de/v1alpha1
+kind: NatsCluster
+metadata:
+  name: e2e-cluster
+`)
+			_, err := utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred())
+
+			By("verifying the ConfigMap is created with auth.conf")
+			verifyConfigMap := func(g Gomega) {
+				cmd := exec.Command("kubectl", "get", "configmap",
+					"e2e-cluster-nats-config", "-n", namespace,
+					"-o", "jsonpath={.data.auth\\.conf}")
+				output, err := utils.Run(cmd)
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(output).To(ContainSubstring("accounts {"))
+			}
+			Eventually(verifyConfigMap).Should(Succeed())
+
+			By("verifying NatsCluster has Ready condition")
+			verifyReady := func(g Gomega) {
+				cmd := exec.Command("kubectl", "get", "natscluster",
+					"e2e-cluster", "-n", namespace,
+					"-o", "jsonpath={.status.conditions[0].type}:{.status.conditions[0].status}")
+				output, err := utils.Run(cmd)
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(output).To(Equal("Ready:True"))
+			}
+			Eventually(verifyReady).Should(Succeed())
+
+			By("cleaning up")
+			cmd = exec.Command("kubectl", "delete", "natscluster", "e2e-cluster", "-n", namespace)
+			_, _ = utils.Run(cmd)
+		})
+
+		It("should reconcile a full stack: cluster + account + user", func() {
+			By("creating NatsCluster, NatsAccount, and NatsUser")
+			cmd := exec.Command("kubectl", "apply", "-n", namespace, "-f", "-")
+			cmd.Stdin = strings.NewReader(`
+apiVersion: nats.k8s.sandstorm.de/v1alpha1
+kind: NatsCluster
+metadata:
+  name: e2e-cluster
+---
+apiVersion: nats.k8s.sandstorm.de/v1alpha1
+kind: NatsAccount
+metadata:
+  name: e2e-account
+spec:
+  clusterRef:
+    name: e2e-cluster
+  jetstream:
+    maxMemory: "512Mi"
+    maxStreams: 10
+---
+apiVersion: nats.k8s.sandstorm.de/v1alpha1
+kind: NatsUser
+metadata:
+  name: e2e-user
+spec:
+  accountRef:
+    name: e2e-account
+  permissions:
+    publish:
+      allow: ["events.>"]
+    subscribe:
+      allow: ["responses.>"]
+`)
+			_, err := utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred())
+
+			By("verifying ConfigMap contains account and jetstream config")
+			verifyConfig := func(g Gomega) {
+				cmd := exec.Command("kubectl", "get", "configmap",
+					"e2e-cluster-nats-config", "-n", namespace,
+					"-o", "jsonpath={.data.auth\\.conf}")
+				output, err := utils.Run(cmd)
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(output).To(ContainSubstring("e2e-account"))
+				g.Expect(output).To(ContainSubstring("jetstream"))
+				g.Expect(output).To(ContainSubstring("max_streams: 10"))
+				g.Expect(output).To(ContainSubstring("nkey: U"))
+				g.Expect(output).To(ContainSubstring(`"events.>"`))
+			}
+			Eventually(verifyConfig).Should(Succeed())
+
+			By("verifying NKey Secret was created for the user")
+			verifySecret := func(g Gomega) {
+				cmd := exec.Command("kubectl", "get", "secret",
+					"e2e-user-nats-nkey", "-n", namespace,
+					"-o", "jsonpath={.data}")
+				output, err := utils.Run(cmd)
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(output).To(ContainSubstring("nkey-public"))
+				g.Expect(output).To(ContainSubstring("nkey-seed"))
+			}
+			Eventually(verifySecret).Should(Succeed())
+
+			By("verifying NatsUser status has public key")
+			verifyUserStatus := func(g Gomega) {
+				cmd := exec.Command("kubectl", "get", "natsuser",
+					"e2e-user", "-n", namespace,
+					"-o", "jsonpath={.status.nkeyPublicKey}")
+				output, err := utils.Run(cmd)
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(output).To(HavePrefix("U"))
+			}
+			Eventually(verifyUserStatus).Should(Succeed())
+
+			By("verifying NatsCluster status counts")
+			verifyClusterStatus := func(g Gomega) {
+				cmd := exec.Command("kubectl", "get", "natscluster",
+					"e2e-cluster", "-n", namespace,
+					"-o", "jsonpath={.status.accountCount},{.status.userCount}")
+				output, err := utils.Run(cmd)
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(output).To(Equal("1,1"))
+			}
+			Eventually(verifyClusterStatus).Should(Succeed())
+
+			By("cleaning up")
+			cmd = exec.Command("kubectl", "delete", "natsuser", "e2e-user", "-n", namespace)
+			_, _ = utils.Run(cmd)
+			cmd = exec.Command("kubectl", "delete", "natsaccount", "e2e-account", "-n", namespace)
+			_, _ = utils.Run(cmd)
+			cmd = exec.Command("kubectl", "delete", "natscluster", "e2e-cluster", "-n", namespace)
+			_, _ = utils.Run(cmd)
+		})
+
+		It("should regenerate config when a user is deleted", func() {
+			By("creating a cluster, account, and two users")
+			cmd := exec.Command("kubectl", "apply", "-n", namespace, "-f", "-")
+			cmd.Stdin = strings.NewReader(`
+apiVersion: nats.k8s.sandstorm.de/v1alpha1
+kind: NatsCluster
+metadata:
+  name: e2e-cluster
+---
+apiVersion: nats.k8s.sandstorm.de/v1alpha1
+kind: NatsAccount
+metadata:
+  name: e2e-account
+spec:
+  clusterRef:
+    name: e2e-cluster
+---
+apiVersion: nats.k8s.sandstorm.de/v1alpha1
+kind: NatsUser
+metadata:
+  name: e2e-user-keep
+spec:
+  accountRef:
+    name: e2e-account
+---
+apiVersion: nats.k8s.sandstorm.de/v1alpha1
+kind: NatsUser
+metadata:
+  name: e2e-user-delete
+spec:
+  accountRef:
+    name: e2e-account
+`)
+			_, err := utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred())
+
+			By("waiting for both users to appear in config")
+			verifyBothUsers := func(g Gomega) {
+				cmd := exec.Command("kubectl", "get", "natscluster",
+					"e2e-cluster", "-n", namespace,
+					"-o", "jsonpath={.status.userCount}")
+				output, err := utils.Run(cmd)
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(output).To(Equal("2"))
+			}
+			Eventually(verifyBothUsers).Should(Succeed())
+
+			By("capturing the deleted user's public key")
+			var deletedUserKey string
+			Eventually(func(g Gomega) {
+				cmd := exec.Command("kubectl", "get", "natsuser",
+					"e2e-user-delete", "-n", namespace,
+					"-o", "jsonpath={.status.nkeyPublicKey}")
+				output, err := utils.Run(cmd)
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(output).To(HavePrefix("U"))
+				deletedUserKey = output
+			}).Should(Succeed())
+
+			By("deleting one user")
+			cmd = exec.Command("kubectl", "delete", "natsuser", "e2e-user-delete", "-n", namespace)
+			_, err = utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred())
+
+			By("verifying config no longer contains deleted user's key")
+			verifyUserRemoved := func(g Gomega) {
+				cmd := exec.Command("kubectl", "get", "configmap",
+					"e2e-cluster-nats-config", "-n", namespace,
+					"-o", "jsonpath={.data.auth\\.conf}")
+				output, err := utils.Run(cmd)
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(output).NotTo(ContainSubstring(deletedUserKey))
+			}
+			Eventually(verifyUserRemoved).Should(Succeed())
+
+			By("verifying cluster status shows 1 user")
+			verifyOneUser := func(g Gomega) {
+				cmd := exec.Command("kubectl", "get", "natscluster",
+					"e2e-cluster", "-n", namespace,
+					"-o", "jsonpath={.status.userCount}")
+				output, err := utils.Run(cmd)
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(output).To(Equal("1"))
+			}
+			Eventually(verifyOneUser).Should(Succeed())
+
+			By("cleaning up")
+			cmd = exec.Command("kubectl", "delete", "natsuser", "e2e-user-keep", "-n", namespace)
+			_, _ = utils.Run(cmd)
+			cmd = exec.Command("kubectl", "delete", "natsaccount", "e2e-account", "-n", namespace)
+			_, _ = utils.Run(cmd)
+			cmd = exec.Command("kubectl", "delete", "natscluster", "e2e-cluster", "-n", namespace)
+			_, _ = utils.Run(cmd)
+		})
 	})
 })
 
