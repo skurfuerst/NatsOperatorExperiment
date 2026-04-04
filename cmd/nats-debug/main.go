@@ -98,7 +98,7 @@ func parseFlags(args []string) (clusterName, namespace, nkey, account string, er
 			return "", "", "", "", fmt.Errorf("unknown flag: %s", args[i])
 		}
 	}
-	return
+	return clusterName, namespace, nkey, account, nil
 }
 
 func newClient() (client.Client, error) {
@@ -160,7 +160,8 @@ func discoverPodURLs(ctx context.Context, c client.Client, clusterName, namespac
 	}
 
 	podList := &corev1.PodList{}
-	if err := c.List(ctx, podList, client.InNamespace(namespace), client.MatchingLabelsSelector{Selector: selector}); err != nil {
+	listOpts := []client.ListOption{client.InNamespace(namespace), client.MatchingLabelsSelector{Selector: selector}}
+	if err := c.List(ctx, podList, listOpts...); err != nil {
 		return nil, fmt.Errorf("listing pods: %w", err)
 	}
 

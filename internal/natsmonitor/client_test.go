@@ -17,7 +17,7 @@ func newTestServer(t *testing.T, result *ConnzResult) *httptest.Server {
 			return
 		}
 		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(result)
+		_ = json.NewEncoder(w).Encode(result)
 	}))
 }
 
