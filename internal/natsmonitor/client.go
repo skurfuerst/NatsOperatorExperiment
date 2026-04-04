@@ -11,6 +11,7 @@ import (
 // MonitorClient queries NATS monitoring endpoints.
 type MonitorClient interface {
 	GetConnz(ctx context.Context, baseURL string) (*ConnzResult, error)
+	GetConnzClosed(ctx context.Context, baseURL string, limit int) (*ConnzResult, error)
 }
 
 // HTTPMonitorClient implements MonitorClient using HTTP.
@@ -37,7 +38,7 @@ func (c *HTTPMonitorClient) GetConnz(ctx context.Context, baseURL string) (*Conn
 	if err != nil {
 		return nil, fmt.Errorf("querying %s: %w", url, err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("unexpected status %d from %s", resp.StatusCode, url)
@@ -49,6 +50,51 @@ func (c *HTTPMonitorClient) GetConnz(ctx context.Context, baseURL string) (*Conn
 	}
 
 	return &result, nil
+}
+
+// GetConnzClosed fetches recently closed connections from the /connz endpoint.
+func (c *HTTPMonitorClient) GetConnzClosed(ctx context.Context, baseURL string, limit int) (*ConnzResult, error) {
+	url := fmt.Sprintf("%s/connz?state=closed&sort=stop&limit=%d", baseURL, limit)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return nil, fmt.Errorf("creating request: %w", err)
+	}
+
+	resp, err := c.client.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("querying %s: %w", url, err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("unexpected status %d from %s", resp.StatusCode, url)
+	}
+
+	var result ConnzResult
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return nil, fmt.Errorf("decoding response from %s: %w", url, err)
+	}
+
+	return &result, nil
+}
+
+// QueryAllServersClosed queries closed connections from all NATS servers.
+func QueryAllServersClosed(ctx context.Context, client MonitorClient, serverURLs map[string]string, limit int) []ServerConnections {
+	results := make([]ServerConnections, 0, len(serverURLs))
+	for name, url := range serverURLs {
+		connz, err := client.GetConnzClosed(ctx, url, limit)
+		sc := ServerConnections{
+			ServerName: name,
+		}
+		if err != nil {
+			sc.Error = err
+		} else {
+			sc.ServerID = connz.ServerID
+			sc.Connections = connz.Connections
+		}
+		results = append(results, sc)
+	}
+	return results
 }
 
 // ServerConnections holds connections from a single NATS server.

@@ -47,6 +47,12 @@ type NatsClusterReconciler struct {
 	client.Client
 	Scheme      *runtime.Scheme
 	PodReloader PodReloader
+
+	// OperatorNamespace and OperatorDeploymentName are discovered at startup
+	// and used to build full kubectl exec debug commands. If empty, debug
+	// commands fall back to bare nats-debug commands.
+	OperatorNamespace      string
+	OperatorDeploymentName string
 }
 
 // +kubebuilder:rbac:groups=nats.k8s.sandstorm.de,resources=natsclusters,verbs=get;list;watch;update;patch
@@ -163,7 +169,7 @@ func (r *NatsClusterReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 
 			// Set debug command and user Ready condition
 			if cluster.Spec.ServerRef != nil {
-				user.Status.DebugCommand = fmt.Sprintf("nats-debug user-connections --cluster %s --namespace %s --nkey %s", cluster.Name, cluster.Namespace, publicKey)
+				user.Status.DebugCommand = r.buildDebugCommand(fmt.Sprintf("nats-debug user-connections --cluster %s --namespace %s --nkey %s", cluster.Name, cluster.Namespace, publicKey))
 			}
 			r.setUserCondition(ctx, user, metav1.ConditionTrue, natsv1alpha1.ReasonReconciled, "User reconciled successfully")
 
@@ -182,7 +188,7 @@ func (r *NatsClusterReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 		// Update account status
 		acct.Status.UserCount = len(usersWithKeys)
 		if cluster.Spec.ServerRef != nil {
-			acct.Status.DebugCommand = fmt.Sprintf("nats-debug account-connections --cluster %s --namespace %s --account %s", cluster.Name, cluster.Namespace, acct.Name)
+			acct.Status.DebugCommand = r.buildDebugCommand(fmt.Sprintf("nats-debug account-connections --cluster %s --namespace %s --account %s", cluster.Name, cluster.Namespace, acct.Name))
 		}
 		r.setAccountCondition(ctx, acct, metav1.ConditionTrue, natsv1alpha1.ReasonReconciled, "Account reconciled successfully")
 
@@ -453,6 +459,15 @@ func (r *NatsClusterReconciler) setUserCondition(ctx context.Context, user *nats
 	if err := r.Status().Update(ctx, user); err != nil {
 		logf.FromContext(ctx).Error(err, "failed to update user condition")
 	}
+}
+
+// buildDebugCommand wraps a bare nats-debug command with kubectl exec prefix
+// if the operator's own deployment identity is known.
+func (r *NatsClusterReconciler) buildDebugCommand(bareCmd string) string {
+	if r.OperatorDeploymentName != "" && r.OperatorNamespace != "" {
+		return fmt.Sprintf("kubectl exec -it deploy/%s -n %s -- %s", r.OperatorDeploymentName, r.OperatorNamespace, bareCmd)
+	}
+	return bareCmd
 }
 
 // evaluateUserRules evaluates the ordered user rules against userNamespace.
