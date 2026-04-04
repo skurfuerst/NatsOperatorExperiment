@@ -233,11 +233,7 @@ func (r *NatsClusterReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 func (r *NatsClusterReconciler) reloadNatsPods(ctx context.Context, cluster *natsv1alpha1.NatsCluster) error {
 	log := logf.FromContext(ctx)
 	ref := cluster.Spec.ServerRef
-	ns := ref.Namespace
-	if ns == "" {
-		ns = cluster.Namespace
-	}
-	key := types.NamespacedName{Name: ref.Name, Namespace: ns}
+	key := types.NamespacedName{Name: ref.Name, Namespace: cluster.Namespace}
 
 	var podSelector *metav1.LabelSelector
 	switch ref.Kind {
@@ -263,7 +259,7 @@ func (r *NatsClusterReconciler) reloadNatsPods(ctx context.Context, cluster *nat
 	}
 
 	podList := &corev1.PodList{}
-	if err := r.List(ctx, podList, client.InNamespace(ns), client.MatchingLabelsSelector{Selector: selector}); err != nil {
+	if err := r.List(ctx, podList, client.InNamespace(cluster.Namespace), client.MatchingLabelsSelector{Selector: selector}); err != nil {
 		return fmt.Errorf("listing pods: %w", err)
 	}
 
@@ -273,7 +269,7 @@ func (r *NatsClusterReconciler) reloadNatsPods(ctx context.Context, cluster *nat
 			log.Info("skipping non-running pod", "pod", pod.Name, "phase", pod.Status.Phase)
 			continue
 		}
-		if err := r.PodReloader.ReloadPod(ctx, ns, pod.Name); err != nil {
+		if err := r.PodReloader.ReloadPod(ctx, cluster.Namespace, pod.Name); err != nil {
 			return fmt.Errorf("reloading pod %s: %w", pod.Name, err)
 		}
 		log.Info("sent SIGHUP to pod", "pod", pod.Name)

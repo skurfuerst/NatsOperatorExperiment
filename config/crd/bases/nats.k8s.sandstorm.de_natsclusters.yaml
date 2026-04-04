@@ -61,10 +61,6 @@ spec:
                   name:
                     description: Name of the Deployment or StatefulSet.
                     type: string
-                  namespace:
-                    description: Namespace of the workload. Defaults to the NatsCluster's
-                      namespace if empty.
-                    type: string
                 required:
                 - kind
                 - name

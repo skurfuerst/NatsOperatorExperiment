@@ -75,7 +75,9 @@ spec:
 
 | Field | Type | Description |
 |-------|------|-------------|
-| `spec.serverRef` | `WorkloadReference` | Optional. References a Deployment or StatefulSet whose pods receive a SIGHUP signal on config changes, triggering a live NATS server config reload without restarting pods. |
+| `spec.serverRef` | `WorkloadReference` | Optional. References a Deployment or StatefulSet whose pods receive a SIGHUP signal on config changes, triggering a live NATS server config reload without restarting pods. Must be in the same namespace as the NatsCluster. |
+| `spec.serverRef.kind` | `string` | **Required when serverRef is set.** `Deployment` or `StatefulSet`. |
+| `spec.serverRef.name` | `string` | **Required when serverRef is set.** Name of the Deployment or StatefulSet. |
 | `status.accountCount` | `int` | Number of accounts linked to this cluster. |
 | `status.userCount` | `int` | Total users across all accounts. |
 | `status.lastConfigHash` | `string` | SHA256 of the last generated config. |
@@ -379,14 +381,16 @@ apiVersion: nats.k8s.sandstorm.de/v1alpha1
 kind: NatsCluster
 metadata:
   name: main
+  namespace: nats
 spec:
   serverRef:
     kind: StatefulSet    # or Deployment
     name: nats
-    namespace: nats      # optional, defaults to cluster's namespace
 ```
 
 The operator does this by exec-ing `kill -HUP 1` in each Running pod (NATS server is assumed to run as PID 1). Pods that are not in the `Running` phase are skipped; they will pick up the updated ConfigMap when they start. No-op reconciliations (config unchanged) leave pods untouched.
+
+> **Namespace requirement:** The referenced Deployment or StatefulSet must be in the **same namespace as the NatsCluster**. The generated ConfigMap (`{cluster-name}-nats-config`) is created in the cluster's namespace, and Kubernetes only allows pods to mount ConfigMaps from their own namespace. If the NATS server workload is in a different namespace, it cannot mount the auth config.
 
 ## CLI Tool
 
