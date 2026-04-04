@@ -43,6 +43,8 @@ func (f *fakePodReloader) ReloadPod(_ context.Context, namespace, podName string
 	return f.err
 }
 
+func ptr[T any](v T) *T { return &v }
+
 var _ = Describe("NatsCluster Controller", func() {
 	const (
 		clusterName   = "test-cluster"
@@ -196,6 +198,9 @@ var _ = Describe("NatsCluster Controller", func() {
 				},
 				Spec: natsv1alpha1.NatsAccountSpec{
 					ClusterRef: natsv1alpha1.LocalObjectReference{Name: clusterName},
+					UserRules: []natsv1alpha1.UserRule{
+						{Action: natsv1alpha1.UserRuleActionGrant, SameNamespace: ptr(true)},
+					},
 				},
 			}
 			Expect(k8sClient.Create(ctx, account)).To(Succeed())
@@ -276,7 +281,7 @@ var _ = Describe("NatsCluster Controller", func() {
 	})
 
 	Context("Cross-namespace NatsUser", func() {
-		It("should allow user from namespace matching allowedUserNamespaces regex", func() {
+		It("should allow user from namespace matching namespaceRegex rule", func() {
 			teamNs := &corev1.Namespace{
 				ObjectMeta: metav1.ObjectMeta{Name: "team-alpha"},
 			}
@@ -296,8 +301,11 @@ var _ = Describe("NatsCluster Controller", func() {
 					Namespace: clusterNs,
 				},
 				Spec: natsv1alpha1.NatsAccountSpec{
-					ClusterRef:            natsv1alpha1.LocalObjectReference{Name: clusterName},
-					AllowedUserNamespaces: []string{"^team-.*$"},
+					ClusterRef: natsv1alpha1.LocalObjectReference{Name: clusterName},
+					UserRules: []natsv1alpha1.UserRule{
+						{Action: natsv1alpha1.UserRuleActionGrant, SameNamespace: ptr(true)},
+						{Action: natsv1alpha1.UserRuleActionGrant, NamespaceRegex: ptr("^team-.*$")},
+					},
 				},
 			}
 			Expect(k8sClient.Create(ctx, account)).To(Succeed())
@@ -346,7 +354,7 @@ var _ = Describe("NatsCluster Controller", func() {
 			Expect(k8sClient.Delete(ctx, cluster)).To(Succeed())
 		})
 
-		It("should reject user from namespace not matching allowedUserNamespaces with condition", func() {
+		It("should reject user from namespace not matching userRules with condition", func() {
 			rejectedNs := &corev1.Namespace{
 				ObjectMeta: metav1.ObjectMeta{Name: "unauthorized-ns"},
 			}
@@ -366,8 +374,10 @@ var _ = Describe("NatsCluster Controller", func() {
 					Namespace: clusterNs,
 				},
 				Spec: natsv1alpha1.NatsAccountSpec{
-					ClusterRef:            natsv1alpha1.LocalObjectReference{Name: clusterName},
-					AllowedUserNamespaces: []string{"^team-.*$"},
+					ClusterRef: natsv1alpha1.LocalObjectReference{Name: clusterName},
+					UserRules: []natsv1alpha1.UserRule{
+						{Action: natsv1alpha1.UserRuleActionGrant, NamespaceRegex: ptr("^team-.*$")},
+					},
 				},
 			}
 			Expect(k8sClient.Create(ctx, account)).To(Succeed())
@@ -502,6 +512,9 @@ var _ = Describe("NatsCluster Controller", func() {
 				},
 				Spec: natsv1alpha1.NatsAccountSpec{
 					ClusterRef: natsv1alpha1.LocalObjectReference{Name: clusterName},
+					UserRules: []natsv1alpha1.UserRule{
+						{Action: natsv1alpha1.UserRuleActionGrant, SameNamespace: ptr(true)},
+					},
 				},
 			}
 			Expect(k8sClient.Create(ctx, account)).To(Succeed())
@@ -628,6 +641,9 @@ var _ = Describe("NatsCluster Controller", func() {
 				},
 				Spec: natsv1alpha1.NatsAccountSpec{
 					ClusterRef: natsv1alpha1.LocalObjectReference{Name: clusterName},
+					UserRules: []natsv1alpha1.UserRule{
+						{Action: natsv1alpha1.UserRuleActionGrant, SameNamespace: ptr(true)},
+					},
 				},
 			}
 			Expect(k8sClient.Create(ctx, account)).To(Succeed())
@@ -975,6 +991,330 @@ var _ = Describe("NatsCluster Controller", func() {
 		})
 	})
 
+	Context("userRules: sameNamespace matcher", func() {
+		It("should grant same-namespace user and deny cross-namespace user", func() {
+			crossNs := &corev1.Namespace{
+				ObjectMeta: metav1.ObjectMeta{Name: "other-ns-samenamespacematcher"},
+			}
+			Expect(k8sClient.Create(ctx, crossNs)).To(Or(Succeed(), MatchError(ContainSubstring("already exists"))))
+
+			cluster := &natsv1alpha1.NatsCluster{
+				ObjectMeta: metav1.ObjectMeta{Name: clusterName, Namespace: clusterNs},
+			}
+			Expect(k8sClient.Create(ctx, cluster)).To(Succeed())
+
+			account := &natsv1alpha1.NatsAccount{
+				ObjectMeta: metav1.ObjectMeta{Name: accountName, Namespace: clusterNs},
+				Spec: natsv1alpha1.NatsAccountSpec{
+					ClusterRef: natsv1alpha1.LocalObjectReference{Name: clusterName},
+					UserRules: []natsv1alpha1.UserRule{
+						{Action: natsv1alpha1.UserRuleActionGrant, SameNamespace: ptr(true)},
+					},
+				},
+			}
+			Expect(k8sClient.Create(ctx, account)).To(Succeed())
+
+			sameNsUser := &natsv1alpha1.NatsUser{
+				ObjectMeta: metav1.ObjectMeta{Name: "same-ns-user", Namespace: clusterNs},
+				Spec: natsv1alpha1.NatsUserSpec{
+					AccountRef: natsv1alpha1.NamespacedObjectReference{Name: accountName},
+				},
+			}
+			Expect(k8sClient.Create(ctx, sameNsUser)).To(Succeed())
+
+			crossNsUser := &natsv1alpha1.NatsUser{
+				ObjectMeta: metav1.ObjectMeta{Name: "other-ns-user", Namespace: "other-ns-samenamespacematcher"},
+				Spec: natsv1alpha1.NatsUserSpec{
+					AccountRef: natsv1alpha1.NamespacedObjectReference{
+						Name:      accountName,
+						Namespace: clusterNs,
+					},
+				},
+			}
+			Expect(k8sClient.Create(ctx, crossNsUser)).To(Succeed())
+
+			doReconcile()
+
+			// Same-namespace user: granted
+			secret := &corev1.Secret{}
+			Expect(k8sClient.Get(ctx, types.NamespacedName{
+				Name: "same-ns-user-nats-nkey", Namespace: clusterNs,
+			}, secret)).To(Succeed())
+
+			Expect(k8sClient.Get(ctx, types.NamespacedName{
+				Name: "same-ns-user", Namespace: clusterNs,
+			}, sameNsUser)).To(Succeed())
+			Expect(meta.FindStatusCondition(sameNsUser.Status.Conditions, natsv1alpha1.ConditionReady).Status).To(Equal(metav1.ConditionTrue))
+
+			// Cross-namespace user: denied
+			Expect(k8sClient.Get(ctx, types.NamespacedName{
+				Name: "other-ns-user", Namespace: "other-ns-samenamespacematcher",
+			}, crossNsUser)).To(Succeed())
+			crossReady := meta.FindStatusCondition(crossNsUser.Status.Conditions, natsv1alpha1.ConditionReady)
+			Expect(crossReady.Status).To(Equal(metav1.ConditionFalse))
+			Expect(crossReady.Reason).To(Equal(natsv1alpha1.ReasonNamespaceNotAllowed))
+
+			// Cleanup
+			Expect(k8sClient.Delete(ctx, sameNsUser)).To(Succeed())
+			Expect(k8sClient.Delete(ctx, crossNsUser)).To(Succeed())
+			Expect(k8sClient.Delete(ctx, account)).To(Succeed())
+			Expect(k8sClient.Delete(ctx, cluster)).To(Succeed())
+		})
+	})
+
+	Context("userRules: deny rule takes precedence over later grant", func() {
+		It("should deny user when a deny rule matches before a grant rule", func() {
+			blockedNs := &corev1.Namespace{
+				ObjectMeta: metav1.ObjectMeta{Name: "blocked-team"},
+			}
+			Expect(k8sClient.Create(ctx, blockedNs)).To(Or(Succeed(), MatchError(ContainSubstring("already exists"))))
+
+			cluster := &natsv1alpha1.NatsCluster{
+				ObjectMeta: metav1.ObjectMeta{Name: clusterName, Namespace: clusterNs},
+			}
+			Expect(k8sClient.Create(ctx, cluster)).To(Succeed())
+
+			account := &natsv1alpha1.NatsAccount{
+				ObjectMeta: metav1.ObjectMeta{Name: accountName, Namespace: clusterNs},
+				Spec: natsv1alpha1.NatsAccountSpec{
+					ClusterRef: natsv1alpha1.LocalObjectReference{Name: clusterName},
+					UserRules: []natsv1alpha1.UserRule{
+						{Action: natsv1alpha1.UserRuleActionDeny, NamespaceRegex: ptr("^blocked-.*$")},
+						{Action: natsv1alpha1.UserRuleActionGrant, NamespaceRegex: ptr("^team-.*$")},
+					},
+				},
+			}
+			Expect(k8sClient.Create(ctx, account)).To(Succeed())
+
+			blockedUser := &natsv1alpha1.NatsUser{
+				ObjectMeta: metav1.ObjectMeta{Name: "blocked-user", Namespace: "blocked-team"},
+				Spec: natsv1alpha1.NatsUserSpec{
+					AccountRef: natsv1alpha1.NamespacedObjectReference{
+						Name:      accountName,
+						Namespace: clusterNs,
+					},
+				},
+			}
+			Expect(k8sClient.Create(ctx, blockedUser)).To(Succeed())
+
+			doReconcile()
+
+			// No secret created
+			secret := &corev1.Secret{}
+			Expect(k8sClient.Get(ctx, types.NamespacedName{
+				Name: "blocked-user-nats-nkey", Namespace: "blocked-team",
+			}, secret)).NotTo(Succeed())
+
+			// User has NamespaceNotAllowed condition
+			Expect(k8sClient.Get(ctx, types.NamespacedName{
+				Name: "blocked-user", Namespace: "blocked-team",
+			}, blockedUser)).To(Succeed())
+			ready := meta.FindStatusCondition(blockedUser.Status.Conditions, natsv1alpha1.ConditionReady)
+			Expect(ready.Status).To(Equal(metav1.ConditionFalse))
+			Expect(ready.Reason).To(Equal(natsv1alpha1.ReasonNamespaceNotAllowed))
+
+			// Cleanup
+			Expect(k8sClient.Delete(ctx, blockedUser)).To(Succeed())
+			Expect(k8sClient.Delete(ctx, account)).To(Succeed())
+			Expect(k8sClient.Delete(ctx, cluster)).To(Succeed())
+		})
+	})
+
+	Context("userRules: namespaceLabels matching", func() {
+		It("should grant user from namespace with matching labels", func() {
+			labeledNs := &corev1.Namespace{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:   "labeled-env-staging",
+					Labels: map[string]string{"env": "staging"},
+				},
+			}
+			Expect(k8sClient.Create(ctx, labeledNs)).To(Or(Succeed(), MatchError(ContainSubstring("already exists"))))
+
+			cluster := &natsv1alpha1.NatsCluster{
+				ObjectMeta: metav1.ObjectMeta{Name: clusterName, Namespace: clusterNs},
+			}
+			Expect(k8sClient.Create(ctx, cluster)).To(Succeed())
+
+			account := &natsv1alpha1.NatsAccount{
+				ObjectMeta: metav1.ObjectMeta{Name: accountName, Namespace: clusterNs},
+				Spec: natsv1alpha1.NatsAccountSpec{
+					ClusterRef: natsv1alpha1.LocalObjectReference{Name: clusterName},
+					UserRules: []natsv1alpha1.UserRule{
+						{Action: natsv1alpha1.UserRuleActionGrant, NamespaceLabels: map[string]string{"env": "staging"}},
+					},
+				},
+			}
+			Expect(k8sClient.Create(ctx, account)).To(Succeed())
+
+			labeledUser := &natsv1alpha1.NatsUser{
+				ObjectMeta: metav1.ObjectMeta{Name: "labeled-user", Namespace: "labeled-env-staging"},
+				Spec: natsv1alpha1.NatsUserSpec{
+					AccountRef: natsv1alpha1.NamespacedObjectReference{
+						Name:      accountName,
+						Namespace: clusterNs,
+					},
+				},
+			}
+			Expect(k8sClient.Create(ctx, labeledUser)).To(Succeed())
+
+			doReconcile()
+
+			// NKey secret created
+			secret := &corev1.Secret{}
+			Expect(k8sClient.Get(ctx, types.NamespacedName{
+				Name: "labeled-user-nats-nkey", Namespace: "labeled-env-staging",
+			}, secret)).To(Succeed())
+
+			// User Ready
+			Expect(k8sClient.Get(ctx, types.NamespacedName{
+				Name: "labeled-user", Namespace: "labeled-env-staging",
+			}, labeledUser)).To(Succeed())
+			Expect(meta.FindStatusCondition(labeledUser.Status.Conditions, natsv1alpha1.ConditionReady).Status).To(Equal(metav1.ConditionTrue))
+
+			// Cleanup
+			Expect(k8sClient.Delete(ctx, labeledUser)).To(Succeed())
+			Expect(k8sClient.Delete(ctx, account)).To(Succeed())
+			Expect(k8sClient.Delete(ctx, cluster)).To(Succeed())
+		})
+
+		It("should deny user from namespace not matching namespaceLabels", func() {
+			unlabeledNs := &corev1.Namespace{
+				ObjectMeta: metav1.ObjectMeta{Name: "unlabeled-ns"},
+			}
+			Expect(k8sClient.Create(ctx, unlabeledNs)).To(Or(Succeed(), MatchError(ContainSubstring("already exists"))))
+
+			cluster := &natsv1alpha1.NatsCluster{
+				ObjectMeta: metav1.ObjectMeta{Name: clusterName, Namespace: clusterNs},
+			}
+			Expect(k8sClient.Create(ctx, cluster)).To(Succeed())
+
+			account := &natsv1alpha1.NatsAccount{
+				ObjectMeta: metav1.ObjectMeta{Name: accountName, Namespace: clusterNs},
+				Spec: natsv1alpha1.NatsAccountSpec{
+					ClusterRef: natsv1alpha1.LocalObjectReference{Name: clusterName},
+					UserRules: []natsv1alpha1.UserRule{
+						{Action: natsv1alpha1.UserRuleActionGrant, NamespaceLabels: map[string]string{"env": "staging"}},
+					},
+				},
+			}
+			Expect(k8sClient.Create(ctx, account)).To(Succeed())
+
+			unlabeledUser := &natsv1alpha1.NatsUser{
+				ObjectMeta: metav1.ObjectMeta{Name: "unlabeled-user", Namespace: "unlabeled-ns"},
+				Spec: natsv1alpha1.NatsUserSpec{
+					AccountRef: natsv1alpha1.NamespacedObjectReference{
+						Name:      accountName,
+						Namespace: clusterNs,
+					},
+				},
+			}
+			Expect(k8sClient.Create(ctx, unlabeledUser)).To(Succeed())
+
+			doReconcile()
+
+			// No secret
+			secret := &corev1.Secret{}
+			Expect(k8sClient.Get(ctx, types.NamespacedName{
+				Name: "unlabeled-user-nats-nkey", Namespace: "unlabeled-ns",
+			}, secret)).NotTo(Succeed())
+
+			// User denied
+			Expect(k8sClient.Get(ctx, types.NamespacedName{
+				Name: "unlabeled-user", Namespace: "unlabeled-ns",
+			}, unlabeledUser)).To(Succeed())
+			ready := meta.FindStatusCondition(unlabeledUser.Status.Conditions, natsv1alpha1.ConditionReady)
+			Expect(ready.Status).To(Equal(metav1.ConditionFalse))
+			Expect(ready.Reason).To(Equal(natsv1alpha1.ReasonNamespaceNotAllowed))
+
+			// Cleanup
+			Expect(k8sClient.Delete(ctx, unlabeledUser)).To(Succeed())
+			Expect(k8sClient.Delete(ctx, account)).To(Succeed())
+			Expect(k8sClient.Delete(ctx, cluster)).To(Succeed())
+		})
+	})
+
+	Context("userRules: rule ordering (first match wins)", func() {
+		It("should grant matching first rule and deny non-matching with catch-all deny", func() {
+			teamBetaNs := &corev1.Namespace{
+				ObjectMeta: metav1.ObjectMeta{Name: "team-beta"},
+			}
+			Expect(k8sClient.Create(ctx, teamBetaNs)).To(Or(Succeed(), MatchError(ContainSubstring("already exists"))))
+			randomNs := &corev1.Namespace{
+				ObjectMeta: metav1.ObjectMeta{Name: "random-ns"},
+			}
+			Expect(k8sClient.Create(ctx, randomNs)).To(Or(Succeed(), MatchError(ContainSubstring("already exists"))))
+
+			cluster := &natsv1alpha1.NatsCluster{
+				ObjectMeta: metav1.ObjectMeta{Name: clusterName, Namespace: clusterNs},
+			}
+			Expect(k8sClient.Create(ctx, cluster)).To(Succeed())
+
+			// Rules: grant team-*, then deny everything else
+			account := &natsv1alpha1.NatsAccount{
+				ObjectMeta: metav1.ObjectMeta{Name: accountName, Namespace: clusterNs},
+				Spec: natsv1alpha1.NatsAccountSpec{
+					ClusterRef: natsv1alpha1.LocalObjectReference{Name: clusterName},
+					UserRules: []natsv1alpha1.UserRule{
+						{Action: natsv1alpha1.UserRuleActionGrant, NamespaceRegex: ptr("^team-.*$")},
+						{Action: natsv1alpha1.UserRuleActionDeny, NamespaceRegex: ptr(".*")},
+					},
+				},
+			}
+			Expect(k8sClient.Create(ctx, account)).To(Succeed())
+
+			grantedUser := &natsv1alpha1.NatsUser{
+				ObjectMeta: metav1.ObjectMeta{Name: "granted-user", Namespace: "team-beta"},
+				Spec: natsv1alpha1.NatsUserSpec{
+					AccountRef: natsv1alpha1.NamespacedObjectReference{
+						Name:      accountName,
+						Namespace: clusterNs,
+					},
+				},
+			}
+			Expect(k8sClient.Create(ctx, grantedUser)).To(Succeed())
+
+			deniedUser := &natsv1alpha1.NatsUser{
+				ObjectMeta: metav1.ObjectMeta{Name: "denied-user", Namespace: "random-ns"},
+				Spec: natsv1alpha1.NatsUserSpec{
+					AccountRef: natsv1alpha1.NamespacedObjectReference{
+						Name:      accountName,
+						Namespace: clusterNs,
+					},
+				},
+			}
+			Expect(k8sClient.Create(ctx, deniedUser)).To(Succeed())
+
+			doReconcile()
+
+			// granted-user: NKey secret exists, Ready=True
+			secret := &corev1.Secret{}
+			Expect(k8sClient.Get(ctx, types.NamespacedName{
+				Name: "granted-user-nats-nkey", Namespace: "team-beta",
+			}, secret)).To(Succeed())
+			Expect(k8sClient.Get(ctx, types.NamespacedName{
+				Name: "granted-user", Namespace: "team-beta",
+			}, grantedUser)).To(Succeed())
+			Expect(meta.FindStatusCondition(grantedUser.Status.Conditions, natsv1alpha1.ConditionReady).Status).To(Equal(metav1.ConditionTrue))
+
+			// denied-user: no secret, Ready=False/NamespaceNotAllowed
+			Expect(k8sClient.Get(ctx, types.NamespacedName{
+				Name: "denied-user-nats-nkey", Namespace: "random-ns",
+			}, secret)).NotTo(Succeed())
+			Expect(k8sClient.Get(ctx, types.NamespacedName{
+				Name: "denied-user", Namespace: "random-ns",
+			}, deniedUser)).To(Succeed())
+			deniedReady := meta.FindStatusCondition(deniedUser.Status.Conditions, natsv1alpha1.ConditionReady)
+			Expect(deniedReady.Status).To(Equal(metav1.ConditionFalse))
+			Expect(deniedReady.Reason).To(Equal(natsv1alpha1.ReasonNamespaceNotAllowed))
+
+			// Cleanup
+			Expect(k8sClient.Delete(ctx, grantedUser)).To(Succeed())
+			Expect(k8sClient.Delete(ctx, deniedUser)).To(Succeed())
+			Expect(k8sClient.Delete(ctx, account)).To(Succeed())
+			Expect(k8sClient.Delete(ctx, cluster)).To(Succeed())
+		})
+	})
+
 	Context("Invalid regex on account", func() {
 		It("should set InvalidRegex condition on account and skip it", func() {
 			cluster := &natsv1alpha1.NatsCluster{
@@ -991,8 +1331,10 @@ var _ = Describe("NatsCluster Controller", func() {
 					Namespace: clusterNs,
 				},
 				Spec: natsv1alpha1.NatsAccountSpec{
-					ClusterRef:            natsv1alpha1.LocalObjectReference{Name: clusterName},
-					AllowedUserNamespaces: []string{"[invalid-regex"},
+					ClusterRef: natsv1alpha1.LocalObjectReference{Name: clusterName},
+					UserRules: []natsv1alpha1.UserRule{
+						{Action: natsv1alpha1.UserRuleActionGrant, NamespaceRegex: ptr("[invalid-regex")},
+					},
 				},
 			}
 			Expect(k8sClient.Create(ctx, account)).To(Succeed())

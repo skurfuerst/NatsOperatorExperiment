@@ -62,6 +62,7 @@ type NatsClusterReconciler struct {
 // +kubebuilder:rbac:groups=apps,resources=statefulsets,verbs=get
 // +kubebuilder:rbac:groups="",resources=pods,verbs=get;list
 // +kubebuilder:rbac:groups="",resources=pods/exec,verbs=create
+// +kubebuilder:rbac:groups="",resources=namespaces,verbs=get;list;watch
 
 func (r *NatsClusterReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	log := logf.FromContext(ctx)
@@ -101,11 +102,20 @@ func (r *NatsClusterReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 	for i := range matchingAccounts {
 		acct := &matchingAccounts[i]
 
-		// Compile allowed namespace regexes
-		regexes, err := compileNamespaceRegexes(acct.Spec.AllowedUserNamespaces)
-		if err != nil {
-			log.Error(err, "failed to compile allowedUserNamespaces regex", "account", acct.Name)
-			r.setAccountCondition(ctx, acct, metav1.ConditionFalse, natsv1alpha1.ReasonInvalidRegex, err.Error())
+		// Pre-validate all regex rules for this account
+		accountValid := true
+		for _, rule := range acct.Spec.UserRules {
+			if rule.NamespaceRegex != nil {
+				if _, err := regexp.Compile(*rule.NamespaceRegex); err != nil {
+					log.Error(err, "invalid namespaceRegex in userRules", "account", acct.Name)
+					r.setAccountCondition(ctx, acct, metav1.ConditionFalse, natsv1alpha1.ReasonInvalidRegex,
+						fmt.Sprintf("invalid namespaceRegex %q: %v", *rule.NamespaceRegex, err))
+					accountValid = false
+					break
+				}
+			}
+		}
+		if !accountValid {
 			continue
 		}
 
@@ -129,11 +139,18 @@ func (r *NatsClusterReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 				continue
 			}
 
-			// Validate user namespace against account's allowedUserNamespaces
-			if user.Namespace != acct.Namespace && !isNamespaceAllowed(user.Namespace, regexes) {
-				log.Info("user namespace not allowed", "user", user.Name, "userNamespace", user.Namespace, "account", acct.Name)
+			// Evaluate user rules (all users, including same-namespace)
+			allowed, err := r.evaluateUserRules(ctx, acct.Spec.UserRules, user.Namespace, acct.Namespace)
+			if err != nil {
+				log.Error(err, "failed to evaluate user rules", "user", user.Name)
+				r.setUserCondition(ctx, user, metav1.ConditionFalse, natsv1alpha1.ReasonNamespaceFetchError,
+					fmt.Sprintf("error evaluating user rules for namespace %q: %v", user.Namespace, err))
+				continue
+			}
+			if !allowed {
+				log.Info("user not allowed by rules", "user", user.Name, "userNamespace", user.Namespace, "account", acct.Name)
 				r.setUserCondition(ctx, user, metav1.ConditionFalse, natsv1alpha1.ReasonNamespaceNotAllowed,
-					fmt.Sprintf("namespace %q not allowed by account %q", user.Namespace, acct.Name))
+					fmt.Sprintf("namespace %q not allowed by account %q userRules", user.Namespace, acct.Name))
 				continue
 			}
 
@@ -380,25 +397,57 @@ func (r *NatsClusterReconciler) setUserCondition(ctx context.Context, user *nats
 	}
 }
 
-func compileNamespaceRegexes(patterns []string) ([]*regexp.Regexp, error) {
-	regexes := make([]*regexp.Regexp, 0, len(patterns))
-	for _, p := range patterns {
-		re, err := regexp.Compile(p)
+// evaluateUserRules evaluates the ordered user rules against userNamespace.
+// Returns (true, nil) if a grant rule matches first.
+// Returns (false, nil) if a deny rule matches first, or no rules match.
+// Returns (false, err) if a namespace fetch for label matching fails.
+func (r *NatsClusterReconciler) evaluateUserRules(
+	ctx context.Context,
+	rules []natsv1alpha1.UserRule,
+	userNamespace string,
+	accountNamespace string,
+) (bool, error) {
+	for _, rule := range rules {
+		matched, err := r.ruleMatchesUser(ctx, rule, userNamespace, accountNamespace)
 		if err != nil {
-			return nil, fmt.Errorf("invalid regex %q: %w", p, err)
+			return false, err
 		}
-		regexes = append(regexes, re)
+		if matched {
+			return rule.Action == natsv1alpha1.UserRuleActionGrant, nil
+		}
 	}
-	return regexes, nil
+	return false, nil // no match → default deny
 }
 
-func isNamespaceAllowed(namespace string, regexes []*regexp.Regexp) bool {
-	for _, re := range regexes {
-		if re.MatchString(namespace) {
-			return true
+func (r *NatsClusterReconciler) ruleMatchesUser(
+	ctx context.Context,
+	rule natsv1alpha1.UserRule,
+	userNamespace string,
+	accountNamespace string,
+) (bool, error) {
+	switch {
+	case rule.SameNamespace != nil && *rule.SameNamespace:
+		return userNamespace == accountNamespace, nil
+	case rule.NamespaceRegex != nil:
+		re, err := regexp.Compile(*rule.NamespaceRegex)
+		if err != nil {
+			return false, fmt.Errorf("invalid namespaceRegex %q: %w", *rule.NamespaceRegex, err)
 		}
+		return re.MatchString(userNamespace), nil
+	case rule.NamespaceLabels != nil:
+		ns := &corev1.Namespace{}
+		if err := r.Get(ctx, types.NamespacedName{Name: userNamespace}, ns); err != nil {
+			return false, fmt.Errorf("fetching namespace %q: %w", userNamespace, err)
+		}
+		for k, v := range rule.NamespaceLabels {
+			if ns.Labels[k] != v {
+				return false, nil
+			}
+		}
+		return true, nil
+	default:
+		return false, nil
 	}
-	return false
 }
 
 // mapAccountToCluster maps a NatsAccount change to the NatsCluster it references.

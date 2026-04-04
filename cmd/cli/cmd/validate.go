@@ -62,14 +62,16 @@ func runValidate(cmd *cobra.Command, args []string) error {
 			})
 		}
 
-		// Validate regex patterns
-		for _, pattern := range acct.Spec.AllowedUserNamespaces {
-			if _, err := regexp.Compile(pattern); err != nil {
-				errs = append(errs, validationError{
-					Resource: "NatsAccount",
-					Name:     acct.Name,
-					Message:  fmt.Sprintf("invalid allowedUserNamespaces regex %q: %v", pattern, err),
-				})
+		// Validate namespaceRegex patterns in userRules
+		for i, rule := range acct.Spec.UserRules {
+			if rule.NamespaceRegex != nil {
+				if _, err := regexp.Compile(*rule.NamespaceRegex); err != nil {
+					errs = append(errs, validationError{
+						Resource: "NatsAccount",
+						Name:     acct.Name,
+						Message:  fmt.Sprintf("userRules[%d].namespaceRegex %q is invalid: %v", i, *rule.NamespaceRegex, err),
+					})
+				}
 			}
 		}
 	}
@@ -87,35 +89,46 @@ func runValidate(cmd *cobra.Command, args []string) error {
 			continue
 		}
 
-		// Check cross-namespace is allowed
+		// Evaluate userRules for this user (offline: sameNamespace and namespaceRegex only;
+		// namespaceLabels rules cannot be evaluated without a live cluster and are skipped).
 		userNs := user.Namespace
 		acctNs := acct.Namespace
-		if userNs != "" && acctNs != "" && userNs != acctNs {
-			if len(acct.Spec.AllowedUserNamespaces) == 0 {
+		if userNs != "" && acctNs != "" {
+			if len(acct.Spec.UserRules) == 0 {
 				errs = append(errs, validationError{
 					Resource: "NatsUser",
 					Name:     user.Name,
 					Message: fmt.Sprintf(
-						"cross-namespace user (ns=%q) but account %q has no allowedUserNamespaces",
+						"user (ns=%q) references account %q which has no userRules (access denied by default)",
 						userNs, acct.Name),
 				})
 			} else {
-				allowed := false
-				for _, pattern := range acct.Spec.AllowedUserNamespaces {
-					re, err := regexp.Compile(pattern)
-					if err != nil {
+				outcome := "deny" // default
+				for _, rule := range acct.Spec.UserRules {
+					var matched bool
+					switch {
+					case rule.SameNamespace != nil && *rule.SameNamespace:
+						matched = userNs == acctNs
+					case rule.NamespaceRegex != nil:
+						re, err := regexp.Compile(*rule.NamespaceRegex)
+						if err != nil {
+							continue // already reported above
+						}
+						matched = re.MatchString(userNs)
+					case rule.NamespaceLabels != nil:
+						// Cannot evaluate without a live cluster; skip this rule.
 						continue
 					}
-					if re.MatchString(userNs) {
-						allowed = true
+					if matched {
+						outcome = string(rule.Action)
 						break
 					}
 				}
-				if !allowed {
+				if outcome == "deny" {
 					errs = append(errs, validationError{
 						Resource: "NatsUser",
 						Name:     user.Name,
-						Message:  fmt.Sprintf("namespace %q not matched by account's allowedUserNamespaces", userNs),
+						Message:  fmt.Sprintf("namespace %q denied by account %q userRules (or no evaluable rule matched)", userNs, acct.Name),
 					})
 				}
 			}
