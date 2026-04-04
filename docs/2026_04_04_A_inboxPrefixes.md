@@ -52,32 +52,74 @@ the subscribe deny on `_INBOX.>`.
 
 ## Operator implementation
 
+### `allow_responses` and inbox isolation
+
+`allow_responses: true` on a service/responder is **not a security hole**. The NATS server
+maintains a per-connection `replies` map. When a message arrives with a reply-to subject,
+the server adds that exact subject to the map. When the responder tries to publish, the server
+only allows it if the target subject is in the map. Constants in the server source:
+`replyPruneTime = time.Second`, `replyPermLimit = 4096`. The responder cannot publish to
+arbitrary inbox subjects — only to subjects it received as reply-to addresses in legitimate
+requests.
+
+For request-reply services, using `allowResponses: { maxMsgs: 1 }` is the tightest
+configuration: it limits each reply-to address to exactly one response.
+
 ### CRD: `inboxPrefix` on `NatsUser`
 
+The `inboxPrefix` field has three modes:
+
 ```yaml
-apiVersion: nats.k8s.sandstorm.de/v1alpha1
-kind: NatsUser
-metadata:
-  name: myapp
-  namespace: default
+# Mode 1: omit — no inbox isolation, default _INBOX.* is used (opt-out)
 spec:
-  accountRef:
-    name: my-account
-  inboxPrefix: "_INBOX_myapp"    # <-- new field
-  permissions:
-    publish:
-      allow: ["myapp.>"]
-    subscribe:
-      allow: ["myapp.>"]
-      # _INBOX.> deny and _INBOX_myapp.> allow are auto-injected by the operator
+  accountRef: { name: my-account }
+
+# Mode 2: empty string — operator auto-generates a random prefix like _I_ABCDE3FG4H5I6J7
+# and stores it in the user Secret under "inbox-prefix"
+spec:
+  accountRef: { name: my-account }
+  inboxPrefix: ""
+
+# Mode 3: explicit prefix — use provided value, also stored in Secret
+spec:
+  accountRef: { name: my-account }
+  inboxPrefix: "_INBOX_myapp"
 ```
 
-When `inboxPrefix` is set, the operator **automatically injects** into the user's subscribe
-permissions:
+In modes 2 and 3, the operator **automatically injects** subscribe permissions:
 - `deny: ["_INBOX.>"]` — prevents listening on default inbox subjects
-- `allow: ["<inboxPrefix>.>"]` — permits listening on the custom inbox prefix
+- `allow: ["<prefix>.>"]` — permits listening on the custom inbox prefix
 
 These are merged with any user-specified allow/deny rules; existing entries are not duplicated.
+
+### Secret layout
+
+When a prefix is in use the user Secret gains an `inbox-prefix` key:
+
+```
+<username>-nats-nkey:
+  nkey-seed:    SUABC...      # NKey seed
+  nkey-public:  UABC...       # NKey public key
+  inbox-prefix: _I_ABCDE3FG   # custom inbox prefix (absent if inboxPrefix: nil)
+```
+
+The client can mount this Secret and load the prefix from an environment variable:
+
+```yaml
+env:
+  - name: NATS_INBOX_PREFIX
+    valueFrom:
+      secretKeyRef:
+        name: myapp-nats-nkey
+        key: inbox-prefix
+```
+
+```go
+nc, err := nats.Connect(natsURL,
+    nats.Nkey(publicKey, signingCallback),
+    nats.CustomInboxPrefix(os.Getenv("NATS_INBOX_PREFIX")),
+)
+```
 
 ### Generated NATS config
 

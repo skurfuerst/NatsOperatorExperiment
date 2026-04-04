@@ -177,7 +177,6 @@ func TestConvertToNatsConfigWithUsers(t *testing.T) {
 }
 
 func TestConvertInboxPrefixInjectsSubscribeRules(t *testing.T) {
-	prefix := "_INBOX_myapp"
 	accounts := []AccountWithUsers{
 		{
 			Account: natsv1alpha1.NatsAccount{
@@ -185,12 +184,9 @@ func TestConvertInboxPrefixInjectsSubscribeRules(t *testing.T) {
 			},
 			Users: []UserWithPublicKey{
 				{
-					User: natsv1alpha1.NatsUser{
-						Spec: natsv1alpha1.NatsUserSpec{
-							InboxPrefix: &prefix,
-						},
-					},
-					PublicKey: "UINBOX1",
+					User:        natsv1alpha1.NatsUser{},
+					PublicKey:   "UINBOX1",
+					InboxPrefix: "_INBOX_myapp",
 				},
 			},
 		},
@@ -214,7 +210,6 @@ func TestConvertInboxPrefixInjectsSubscribeRules(t *testing.T) {
 }
 
 func TestConvertInboxPrefixMergesWithExistingSubscribePermissions(t *testing.T) {
-	prefix := "_INBOX_alice"
 	accounts := []AccountWithUsers{
 		{
 			Account: natsv1alpha1.NatsAccount{
@@ -224,7 +219,6 @@ func TestConvertInboxPrefixMergesWithExistingSubscribePermissions(t *testing.T) 
 				{
 					User: natsv1alpha1.NatsUser{
 						Spec: natsv1alpha1.NatsUserSpec{
-							InboxPrefix: &prefix,
 							Permissions: &natsv1alpha1.Permissions{
 								Subscribe: &natsv1alpha1.PermissionRule{
 									Allow: []string{"events.>"},
@@ -233,7 +227,8 @@ func TestConvertInboxPrefixMergesWithExistingSubscribePermissions(t *testing.T) 
 							},
 						},
 					},
-					PublicKey: "UALICE1",
+					PublicKey:   "UALICE1",
+					InboxPrefix: "_INBOX_alice",
 				},
 			},
 		},
@@ -259,7 +254,6 @@ func TestConvertInboxPrefixMergesWithExistingSubscribePermissions(t *testing.T) 
 }
 
 func TestConvertInboxPrefixNoDuplicateIfAlreadySet(t *testing.T) {
-	prefix := "_INBOX_bob"
 	accounts := []AccountWithUsers{
 		{
 			Account: natsv1alpha1.NatsAccount{
@@ -269,7 +263,6 @@ func TestConvertInboxPrefixNoDuplicateIfAlreadySet(t *testing.T) {
 				{
 					User: natsv1alpha1.NatsUser{
 						Spec: natsv1alpha1.NatsUserSpec{
-							InboxPrefix: &prefix,
 							Permissions: &natsv1alpha1.Permissions{
 								Subscribe: &natsv1alpha1.PermissionRule{
 									Allow: []string{"_INBOX_bob.>"},
@@ -278,7 +271,8 @@ func TestConvertInboxPrefixNoDuplicateIfAlreadySet(t *testing.T) {
 							},
 						},
 					},
-					PublicKey: "UBOB1",
+					PublicKey:   "UBOB1",
+					InboxPrefix: "_INBOX_bob",
 				},
 			},
 		},

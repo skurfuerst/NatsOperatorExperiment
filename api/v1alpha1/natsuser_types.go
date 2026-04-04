@@ -26,13 +26,20 @@ type NatsUserSpec struct {
 	// Can be cross-namespace if the NatsAccount's allowedUserNamespaces permits it.
 	AccountRef NamespacedObjectReference `json:"accountRef"`
 
-	// InboxPrefix sets a custom inbox subject prefix for this user's request-reply pattern.
-	// When set, the operator automatically injects subscribe permissions:
-	//   - deny  "_INBOX.>"           (blocks the default inbox prefix)
-	//   - allow "<inboxPrefix>.>"    (permits only this user's inbox subjects)
-	// The NATS client connecting with this user's nkey must also be configured with the
-	// same prefix (e.g. nats.InboxPrefix("<inboxPrefix>") in Go, or --inbox-prefix in CLI).
-	// This provides inbox isolation in nkey mode, approximating the JWT resp_prefix feature.
+	// InboxPrefix controls inbox isolation for this user's request-reply pattern.
+	//
+	// Three modes:
+	//   - Omit entirely (nil): no inbox isolation; default NATS "_INBOX.*" is used.
+	//   - Empty string "":    operator auto-generates a random prefix, stores it in the
+	//                         user's Secret under key "inbox-prefix".
+	//   - Non-empty string:   use the provided prefix, also stored in the Secret.
+	//
+	// When a prefix is active the operator automatically injects subscribe permissions:
+	//   - deny  "_INBOX.>"        (blocks the default inbox prefix)
+	//   - allow "<prefix>.>"      (permits only this user's inbox subjects)
+	//
+	// The NATS client must use the same prefix:
+	//   nats.CustomInboxPrefix("<prefix>") in Go, or --inbox-prefix <prefix> in CLI.
 	// +optional
 	InboxPrefix *string `json:"inboxPrefix,omitempty"`
 

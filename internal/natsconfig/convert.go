@@ -14,10 +14,12 @@ type AccountWithUsers struct {
 	Users   []UserWithPublicKey
 }
 
-// UserWithPublicKey pairs a NatsUser with its resolved NKey public key.
+// UserWithPublicKey pairs a NatsUser with its resolved NKey public key and inbox prefix.
+// InboxPrefix is the resolved prefix (from secret or spec); empty string means no inbox isolation.
 type UserWithPublicKey struct {
-	User      natsv1alpha1.NatsUser
-	PublicKey string
+	User        natsv1alpha1.NatsUser
+	PublicKey   string
+	InboxPrefix string
 }
 
 // ConvertToNatsConfig converts CRD resources to the internal config representation.
@@ -41,8 +43,8 @@ func ConvertToNatsConfig(accounts []AccountWithUsers) *NatsConfig {
 			userCfg := UserConfig{
 				NKey: uwk.PublicKey,
 			}
-			if uwk.User.Spec.Permissions != nil || uwk.User.Spec.InboxPrefix != nil {
-				userCfg.Permissions = convertPermissions(uwk.User.Spec.Permissions, uwk.User.Spec.InboxPrefix)
+			if uwk.User.Spec.Permissions != nil || uwk.InboxPrefix != "" {
+				userCfg.Permissions = convertPermissions(uwk.User.Spec.Permissions, uwk.InboxPrefix)
 			}
 			acctCfg.Users = append(acctCfg.Users, userCfg)
 		}
@@ -85,7 +87,7 @@ func convertLimits(l *natsv1alpha1.AccountLimits) *LimitsConfig {
 	return c
 }
 
-func convertPermissions(p *natsv1alpha1.Permissions, inboxPrefix *string) *PermissionsConfig {
+func convertPermissions(p *natsv1alpha1.Permissions, inboxPrefix string) *PermissionsConfig {
 	c := &PermissionsConfig{}
 	if p != nil {
 		if p.Publish != nil {
@@ -107,8 +109,8 @@ func convertPermissions(p *natsv1alpha1.Permissions, inboxPrefix *string) *Permi
 			}
 		}
 	}
-	if inboxPrefix != nil {
-		c.Subscribe = injectInboxPrefix(c.Subscribe, *inboxPrefix)
+	if inboxPrefix != "" {
+		c.Subscribe = injectInboxPrefix(c.Subscribe, inboxPrefix)
 	}
 	return c
 }
