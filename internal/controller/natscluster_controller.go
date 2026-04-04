@@ -233,11 +233,7 @@ func (r *NatsClusterReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 func (r *NatsClusterReconciler) reloadNatsPods(ctx context.Context, cluster *natsv1alpha1.NatsCluster) error {
 	log := logf.FromContext(ctx)
 	ref := cluster.Spec.ServerRef
-	ns := ref.Namespace
-	if ns == "" {
-		ns = cluster.Namespace
-	}
-	key := types.NamespacedName{Name: ref.Name, Namespace: ns}
+	key := types.NamespacedName{Name: ref.Name, Namespace: cluster.Namespace}
 
 	var podSelector *metav1.LabelSelector
 	switch ref.Kind {

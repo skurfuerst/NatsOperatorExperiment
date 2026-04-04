@@ -78,7 +78,6 @@ spec:
 | `spec.serverRef` | `WorkloadReference` | Optional. References a Deployment or StatefulSet whose pods receive a SIGHUP signal on config changes, triggering a live NATS server config reload without restarting pods. Must be in the same namespace as the NatsCluster. |
 | `spec.serverRef.kind` | `string` | **Required when serverRef is set.** `Deployment` or `StatefulSet`. |
 | `spec.serverRef.name` | `string` | **Required when serverRef is set.** Name of the Deployment or StatefulSet. |
-| `spec.serverRef.namespace` | `string` | Namespace of the workload. Defaults to the NatsCluster's namespace. Should match the cluster namespace, since the ConfigMap the NATS server mounts is generated there. |
 | `status.accountCount` | `int` | Number of accounts linked to this cluster. |
 | `status.userCount` | `int` | Total users across all accounts. |
 | `status.lastConfigHash` | `string` | SHA256 of the last generated config. |
