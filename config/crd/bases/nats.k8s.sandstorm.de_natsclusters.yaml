@@ -46,6 +46,13 @@ spec:
           spec:
             description: NatsClusterSpec defines the desired state of NatsCluster.
             properties:
+              monitoringPort:
+                default: 8222
+                description: |-
+                  MonitoringPort is the HTTP monitoring port on the NATS server pods.
+                  Defaults to 8222. Used by the nats-debug CLI to query connection status.
+                format: int32
+                type: integer
               serverRef:
                 description: |-
                   ServerRef optionally references the Deployment or StatefulSet running NATS.

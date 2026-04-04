@@ -161,7 +161,10 @@ func (r *NatsClusterReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 				return ctrl.Result{}, err
 			}
 
-			// Set user Ready condition
+			// Set debug command and user Ready condition
+			if cluster.Spec.ServerRef != nil {
+				user.Status.DebugCommand = fmt.Sprintf("nats-debug user-connections --cluster %s --namespace %s --nkey %s", cluster.Name, cluster.Namespace, publicKey)
+			}
 			r.setUserCondition(ctx, user, metav1.ConditionTrue, natsv1alpha1.ReasonReconciled, "User reconciled successfully")
 
 			usersWithKeys = append(usersWithKeys, natsconfig.UserWithPublicKey{
@@ -178,6 +181,9 @@ func (r *NatsClusterReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 
 		// Update account status
 		acct.Status.UserCount = len(usersWithKeys)
+		if cluster.Spec.ServerRef != nil {
+			acct.Status.DebugCommand = fmt.Sprintf("nats-debug account-connections --cluster %s --namespace %s --account %s", cluster.Name, cluster.Namespace, acct.Name)
+		}
 		r.setAccountCondition(ctx, acct, metav1.ConditionTrue, natsv1alpha1.ReasonReconciled, "Account reconciled successfully")
 
 		totalUsers += len(usersWithKeys)

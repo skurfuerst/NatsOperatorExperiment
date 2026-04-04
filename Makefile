@@ -158,6 +158,7 @@ lint-config: golangci-lint ## Verify golangci-lint linter configuration
 .PHONY: build
 build: manifests generate fmt vet ## Build manager binary.
 	go build -o bin/manager cmd/main.go
+	go build -o bin/nats-debug cmd/nats-debug/main.go
 
 .PHONY: build-cli
 build-cli: fmt vet ## Build CLI binary.
