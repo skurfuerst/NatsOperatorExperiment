@@ -16,20 +16,37 @@ The operator does **not** deploy or manage NATS server pods. It only generates t
 
 NKey-based auth uses a static config file (`auth.conf`) that NATS loads directly. This is simpler to operate than JWT/resolver-based auth: no account server, no resolver config, no token rotation. The tradeoff is that config changes require a NATS reload, which the operator handles automatically via the [reload mechanism](#reload-mechanism).
 
-## Architecture
+## Concepts
+
+**NatsAccounts are tenants** -- think of them as isolated customers, teams, or environments. Each account gets its own subject namespace, JetStream limits, and connection quotas. Accounts cannot see each other's messages by default.
+
+**NatsUsers are applications/services** within a tenant. Each microservice, worker, or API gateway that connects to NATS gets its own NatsUser with fine-grained publish/subscribe permissions. The NKey credentials (stored in a Secret) are mounted into the service's pod.
+
+For example, a multi-tenant SaaS platform might look like:
 
 ```
-NatsCluster (namespace: nats)
+NatsCluster "main" (namespace: nats)
   |
-  +-- NatsAccount "orders" (namespace: nats)
+  +-- NatsAccount "customer-a"          <-- tenant: Customer A
   |     |
-  |     +-- NatsUser "order-service" (namespace: nats)
-  |     +-- NatsUser "order-worker"  (namespace: team-a)  <-- cross-namespace
+  |     +-- NatsUser "api-gateway"      <-- service: handles HTTP requests
+  |     +-- NatsUser "order-processor"  <-- service: processes orders
+  |     +-- NatsUser "notification-svc" <-- service: sends notifications
   |
-  +-- NatsAccount "events" (namespace: nats)
+  +-- NatsAccount "customer-b"          <-- tenant: Customer B
+  |     |
+  |     +-- NatsUser "api-gateway"      <-- same architecture, fully isolated
+  |     +-- NatsUser "analytics-worker" <-- different services per tenant
+  |
+  +-- NatsAccount "internal"            <-- tenant: your own platform services
         |
-        +-- NatsUser "event-publisher" (namespace: nats)
+        +-- NatsUser "billing-svc"      <-- internal service
+        +-- NatsUser "monitoring"       <-- internal service
 ```
+
+Each account is a hard isolation boundary -- `customer-a`'s services can only see subjects within their account. A user like `api-gateway` gets permissions scoped to exactly the subjects it needs (e.g., may publish to `orders.>` but not `admin.>`).
+
+## Architecture
 
 - **Single controller** (`NatsClusterReconciler`) watches all 3 CRDs
 - **NatsAccount** must be in the **same namespace** as its NatsCluster
@@ -65,7 +82,7 @@ spec:
 
 ### NatsAccount
 
-An account defines JetStream limits, connection limits, and which namespaces may create users.
+An account represents a **tenant** (e.g., a customer, team, or environment). It defines the tenant's JetStream limits, connection limits, and which Kubernetes namespaces may create users belonging to this tenant.
 
 ```yaml
 apiVersion: nats.k8s.sandstorm.de/v1alpha1
@@ -107,7 +124,7 @@ spec:
 
 ### NatsUser
 
-A user belongs to an account and gets auto-generated NKey credentials stored in a Secret.
+A user represents a **specific application or service** within a tenant's account. Each service that connects to NATS gets its own NatsUser with dedicated NKey credentials (stored in a Secret) and fine-grained publish/subscribe permissions.
 
 ```yaml
 apiVersion: nats.k8s.sandstorm.de/v1alpha1
