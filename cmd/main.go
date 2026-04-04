@@ -17,6 +17,7 @@ limitations under the License.
 package main
 
 import (
+	"context"
 	"crypto/tls"
 	"flag"
 	"os"
@@ -202,10 +203,23 @@ func main() {
 		os.Exit(1)
 	}
 
+	// Discover operator identity for building full kubectl exec debug commands
+	var operatorNamespace, operatorDeploymentName string
+	identity, err := controller.DiscoverOperatorIdentityFromEnv(context.Background(), mgr.GetAPIReader())
+	if err != nil {
+		setupLog.Info("could not discover operator identity, debug commands will use bare format", "error", err)
+	} else if identity != nil {
+		operatorNamespace = identity.Namespace
+		operatorDeploymentName = identity.DeploymentName
+		setupLog.Info("discovered operator identity", "deployment", operatorDeploymentName, "namespace", operatorNamespace)
+	}
+
 	if err := (&controller.NatsClusterReconciler{
-		Client:      mgr.GetClient(),
-		Scheme:      mgr.GetScheme(),
-		PodReloader: &controller.SpdyPodReloader{RestConfig: mgr.GetConfig()},
+		Client:                 mgr.GetClient(),
+		Scheme:                 mgr.GetScheme(),
+		PodReloader:            &controller.SpdyPodReloader{RestConfig: mgr.GetConfig()},
+		OperatorNamespace:      operatorNamespace,
+		OperatorDeploymentName: operatorDeploymentName,
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "NatsCluster")
 		os.Exit(1)

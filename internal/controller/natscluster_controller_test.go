@@ -1473,4 +1473,178 @@ var _ = Describe("NatsCluster Controller", func() {
 			Expect(k8sClient.Delete(ctx, cluster)).To(Succeed())
 		})
 	})
+
+	Context("Debug commands with operator identity", func() {
+		const (
+			debugClusterName = "debug-test-cluster"
+			debugAccountName = "debug-test-account"
+			debugUserName    = "debug-test-user"
+		)
+
+		It("should include full kubectl exec prefix in debug commands when operator identity is set", func() {
+			// Create a Deployment so reloadNatsPods succeeds
+			deploy := &appsv1.Deployment{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "nats-server-debug",
+					Namespace: clusterNs,
+				},
+				Spec: appsv1.DeploymentSpec{
+					Selector: &metav1.LabelSelector{
+						MatchLabels: map[string]string{"app": "nats-debug-test"},
+					},
+					Template: corev1.PodTemplateSpec{
+						ObjectMeta: metav1.ObjectMeta{
+							Labels: map[string]string{"app": "nats-debug-test"},
+						},
+						Spec: corev1.PodSpec{
+							Containers: []corev1.Container{
+								{Name: "nats", Image: "nats:latest"},
+							},
+						},
+					},
+				},
+			}
+			Expect(k8sClient.Create(ctx, deploy)).To(Succeed())
+
+			cluster := &natsv1alpha1.NatsCluster{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      debugClusterName,
+					Namespace: clusterNs,
+				},
+				Spec: natsv1alpha1.NatsClusterSpec{
+					ServerRef: &natsv1alpha1.WorkloadReference{
+						Kind: "Deployment",
+						Name: "nats-server-debug",
+					},
+				},
+			}
+			Expect(k8sClient.Create(ctx, cluster)).To(Succeed())
+
+			account := &natsv1alpha1.NatsAccount{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      debugAccountName,
+					Namespace: clusterNs,
+				},
+				Spec: natsv1alpha1.NatsAccountSpec{
+					ClusterRef: natsv1alpha1.LocalObjectReference{Name: debugClusterName},
+					UserRules: []natsv1alpha1.UserRule{
+						{Action: natsv1alpha1.UserRuleActionGrant, SameNamespace: ptr(true)},
+					},
+				},
+			}
+			Expect(k8sClient.Create(ctx, account)).To(Succeed())
+
+			user := &natsv1alpha1.NatsUser{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      debugUserName,
+					Namespace: clusterNs,
+				},
+				Spec: natsv1alpha1.NatsUserSpec{
+					AccountRef: natsv1alpha1.NamespacedObjectReference{
+						Name:      debugAccountName,
+						Namespace: clusterNs,
+					},
+				},
+			}
+			Expect(k8sClient.Create(ctx, user)).To(Succeed())
+
+			r := &NatsClusterReconciler{
+				Client:                 k8sClient,
+				Scheme:                 k8sClient.Scheme(),
+				PodReloader:            &fakePodReloader{},
+				OperatorNamespace:      "nats-system",
+				OperatorDeploymentName: "natsoperator-controller-manager",
+			}
+			_, err := r.Reconcile(ctx, reconcile.Request{
+				NamespacedName: types.NamespacedName{Name: debugClusterName, Namespace: clusterNs},
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			// Check user debug command has kubectl prefix
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: debugUserName, Namespace: clusterNs}, user)).To(Succeed())
+			Expect(user.Status.DebugCommand).To(HavePrefix("kubectl exec -it deploy/natsoperator-controller-manager -n nats-system -- nats-debug user-connections"))
+			Expect(user.Status.DebugCommand).To(ContainSubstring("--cluster " + debugClusterName))
+
+			// Check account debug command has kubectl prefix
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: debugAccountName, Namespace: clusterNs}, account)).To(Succeed())
+			Expect(account.Status.DebugCommand).To(HavePrefix("kubectl exec -it deploy/natsoperator-controller-manager -n nats-system -- nats-debug account-connections"))
+			Expect(account.Status.DebugCommand).To(ContainSubstring("--account " + debugAccountName))
+
+			// Cleanup
+			Expect(k8sClient.Delete(ctx, user)).To(Succeed())
+			Expect(k8sClient.Delete(ctx, account)).To(Succeed())
+			Expect(k8sClient.Delete(ctx, cluster)).To(Succeed())
+			Expect(k8sClient.Delete(ctx, deploy)).To(Succeed())
+		})
+
+		It("should use bare commands when operator identity is not set", func() {
+			deploy := &appsv1.Deployment{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "nats-server-debug2",
+					Namespace: clusterNs,
+				},
+				Spec: appsv1.DeploymentSpec{
+					Selector: &metav1.LabelSelector{
+						MatchLabels: map[string]string{"app": "nats-debug-test2"},
+					},
+					Template: corev1.PodTemplateSpec{
+						ObjectMeta: metav1.ObjectMeta{
+							Labels: map[string]string{"app": "nats-debug-test2"},
+						},
+						Spec: corev1.PodSpec{
+							Containers: []corev1.Container{
+								{Name: "nats", Image: "nats:latest"},
+							},
+						},
+					},
+				},
+			}
+			Expect(k8sClient.Create(ctx, deploy)).To(Succeed())
+
+			cluster := &natsv1alpha1.NatsCluster{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      debugClusterName,
+					Namespace: clusterNs,
+				},
+				Spec: natsv1alpha1.NatsClusterSpec{
+					ServerRef: &natsv1alpha1.WorkloadReference{
+						Kind: "Deployment",
+						Name: "nats-server-debug2",
+					},
+				},
+			}
+			Expect(k8sClient.Create(ctx, cluster)).To(Succeed())
+
+			account := &natsv1alpha1.NatsAccount{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      debugAccountName,
+					Namespace: clusterNs,
+				},
+				Spec: natsv1alpha1.NatsAccountSpec{
+					ClusterRef: natsv1alpha1.LocalObjectReference{Name: debugClusterName},
+				},
+			}
+			Expect(k8sClient.Create(ctx, account)).To(Succeed())
+
+			// Reconciler without identity, with fake reloader
+			r := &NatsClusterReconciler{
+				Client:      k8sClient,
+				Scheme:      k8sClient.Scheme(),
+				PodReloader: &fakePodReloader{},
+			}
+			_, err := r.Reconcile(ctx, reconcile.Request{
+				NamespacedName: types.NamespacedName{Name: debugClusterName, Namespace: clusterNs},
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			// Check account debug command is bare (no kubectl prefix)
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: debugAccountName, Namespace: clusterNs}, account)).To(Succeed())
+			Expect(account.Status.DebugCommand).To(HavePrefix("nats-debug account-connections"))
+
+			// Cleanup
+			Expect(k8sClient.Delete(ctx, account)).To(Succeed())
+			Expect(k8sClient.Delete(ctx, cluster)).To(Succeed())
+			Expect(k8sClient.Delete(ctx, deploy)).To(Succeed())
+		})
+	})
 })

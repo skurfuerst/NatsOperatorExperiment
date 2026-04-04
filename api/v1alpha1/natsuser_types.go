@@ -204,8 +204,8 @@ type NatsUserStatus struct {
 	// +optional
 	SecretRef *SecretReference `json:"secretRef,omitempty"`
 
-	// DebugCommand is a command to check this user's NATS connections.
-	// Run it via kubectl exec in the operator pod.
+	// DebugCommand is a full kubectl command to check this user's NATS connections.
+	// Copy-paste it to debug connection issues.
 	// +optional
 	DebugCommand string `json:"debugCommand,omitempty"`
 }

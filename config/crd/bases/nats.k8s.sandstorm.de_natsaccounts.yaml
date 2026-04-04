@@ -246,8 +246,8 @@ spec:
                 type: array
               debugCommand:
                 description: |-
-                  DebugCommand is a command to check this account's NATS connections.
-                  Run it via kubectl exec in the operator pod.
+                  DebugCommand is a full kubectl command to check this account's NATS connections.
+                  Copy-paste it to debug connection issues.
                 type: string
               userCount:
                 description: UserCount is the number of NatsUsers in this account.

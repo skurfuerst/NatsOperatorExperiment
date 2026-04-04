@@ -165,7 +165,7 @@ Value:
 nats-debug account-connections --cluster mycluster --namespace default --account myaccount
 ```
 
-Note: The command deliberately omits the `kubectl exec` prefix since the operator deployment name varies. The status message or docs can explain: "Run this command inside the operator pod."
+The operator auto-discovers its own Deployment name and namespace at startup via Kubernetes Downward API (`POD_NAME`, `POD_NAMESPACE` env vars) and the pod's ownerReference chain (Pod → ReplicaSet → Deployment). The debug command includes the full `kubectl exec` prefix so users can copy-paste it directly. If discovery fails (e.g. running locally), it falls back to the bare `nats-debug` command.
 
 ### 5. kubectl experience
 
