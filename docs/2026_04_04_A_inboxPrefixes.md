@@ -107,10 +107,10 @@ accounts {
 The NATS client **must** be configured to use the same inbox prefix:
 
 ```go
-// Go client
+// Go client — note: CustomInboxPrefix, NOT InboxPrefix; must NOT have trailing dot
 nc, err := nats.Connect(natsURL,
     nats.Nkey(publicKey, signingCallback),
-    nats.InboxPrefix("_INBOX_myapp"),
+    nats.CustomInboxPrefix("_INBOX_myapp"),
 )
 ```
 
