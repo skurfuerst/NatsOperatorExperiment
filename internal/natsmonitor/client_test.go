@@ -9,10 +9,12 @@ import (
 	"testing"
 )
 
+const connzPath = "/connz"
+
 func newTestServer(t *testing.T, result *ConnzResult) *httptest.Server {
 	t.Helper()
 	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/connz" {
+		if r.URL.Path != connzPath {
 			http.NotFound(w, r)
 			return
 		}
@@ -201,6 +203,73 @@ func TestFilterByAccount(t *testing.T) {
 	}
 	if filtered[0].Connections[0].NKey != "UABC123" {
 		t.Errorf("expected NKey UABC123, got %s", filtered[0].Connections[0].NKey)
+	}
+}
+
+func TestGetConnzClosed_Success(t *testing.T) {
+	expected := &ConnzResult{
+		ServerID:       "server-1",
+		NumConnections: 2,
+		Connections: []ConnectionInfo{
+			{CID: 1, NKey: "UABC123", IP: "10.0.0.1", Port: 4222, Reason: "Authorization Violation", Stop: "2026-04-04T10:00:01Z"},
+			{CID: 2, NKey: "UDEF456", IP: "10.0.0.2", Port: 4222, Reason: "Client Closed", Stop: "2026-04-04T10:00:02Z"},
+		},
+	}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != connzPath {
+			http.NotFound(w, r)
+			return
+		}
+		if r.URL.Query().Get("state") != "closed" {
+			t.Errorf("expected state=closed query param, got %q", r.URL.Query().Get("state"))
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(expected)
+	}))
+	defer srv.Close()
+
+	client := NewHTTPMonitorClient()
+	result, err := client.GetConnzClosed(context.Background(), srv.URL, 50)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(result.Connections) != 2 {
+		t.Fatalf("expected 2 connections, got %d", len(result.Connections))
+	}
+	if result.Connections[0].Reason != "Authorization Violation" {
+		t.Errorf("expected reason 'Authorization Violation', got %q", result.Connections[0].Reason)
+	}
+	if result.Connections[0].Stop != "2026-04-04T10:00:01Z" {
+		t.Errorf("expected stop time, got %q", result.Connections[0].Stop)
+	}
+}
+
+func TestQueryAllServersClosed(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != connzPath {
+			http.NotFound(w, r)
+			return
+		}
+		_ = json.NewEncoder(w).Encode(&ConnzResult{
+			ServerID: "s1",
+			Connections: []ConnectionInfo{
+				{CID: 1, Reason: "Authorization Violation", Stop: "2026-04-04T10:00:01Z"},
+			},
+		})
+	}))
+	defer srv.Close()
+
+	client := NewHTTPMonitorClient()
+	urls := map[string]string{"nats-0": srv.URL}
+	results := QueryAllServersClosed(context.Background(), client, urls, 50)
+	if len(results) != 1 {
+		t.Fatalf("expected 1 server result, got %d", len(results))
+	}
+	if results[0].Error != nil {
+		t.Fatalf("unexpected error: %v", results[0].Error)
+	}
+	if len(results[0].Connections) != 1 {
+		t.Fatalf("expected 1 closed connection, got %d", len(results[0].Connections))
 	}
 }
 

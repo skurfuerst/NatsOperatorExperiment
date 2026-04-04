@@ -8,6 +8,7 @@ type ConnzResult struct {
 }
 
 // ConnectionInfo represents a single client connection from /connz.
+// For closed connections (queried via state=closed), the Stop and Reason fields are populated.
 type ConnectionInfo struct {
 	CID           uint64 `json:"cid"`
 	IP            string `json:"ip"`
@@ -22,4 +23,6 @@ type ConnectionInfo struct {
 	OutBytes      int64  `json:"out_bytes"`
 	Uptime        string `json:"uptime"`
 	Start         string `json:"start"`
+	Stop          string `json:"stop,omitempty"`
+	Reason        string `json:"reason,omitempty"`
 }

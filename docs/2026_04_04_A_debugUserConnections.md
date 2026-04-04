@@ -81,16 +81,39 @@ Status: CONNECTED (2 active connections across 2 servers)
     Msgs In/Out:    89 / 23
 ```
 
-**Example when NOT connected:**
+**Example when NOT connected (with automated diagnostics):**
 ```
 User: UABC123...
-Status: NOT CONNECTED (queried 3 servers, 0 connections found)
+Status: NOT CONNECTED (queried 3 server(s), 0 connections found)
 
-Troubleshooting hints:
-  - Verify the client is using the correct nkey seed from Secret "my-service-user-nats-nkey"
-  - Check client logs for connection errors
-  - Verify network connectivity to the NATS server
+Diagnostics:
+
+  [!] Found 2 recently closed connection(s) for this NKey:
+      Server: nats-0 | Reason: Authorization Violation | IP: 10.0.1.5:54321 | Closed: 2026-04-04T10:00:01Z
+      Server: nats-1 | Reason: Authorization Violation | IP: 10.0.2.10:43210 | Closed: 2026-04-04T09:58:30Z
+
+  [!] NKey UABC123... NOT FOUND in auth.conf (ConfigMap mycluster-nats-config)
+      This user's NKey is not in the NATS server config.
+      Likely causes:
+        - User denied by account's userRules (namespace not allowed)
+        - NatsUser not yet reconciled
+
+  NatsUser: team-b/my-service-user
+  Account:  default/myaccount
+  [!] Ready: False | Reason: NamespaceNotAllowed | namespace "team-b" not allowed by account rules
+
+  Useful commands:
+    View auth config:  kubectl get configmap mycluster-nats-config -n default -o jsonpath='{.data.auth\.conf}'
+    View NATS logs:    kubectl logs deployment/nats-server -n default --tail=50 | grep -i auth
 ```
+
+The diagnostics automatically check:
+1. **Closed connections** — queries `/connz?state=closed` for recent auth violations and disconnects
+2. **NKey in auth.conf** — verifies the user's NKey is present in the ConfigMap
+3. **NatsUser status** — shows Ready condition, account reference, and secret status
+4. **NKey secret** — verifies the secret exists and the public key matches
+5. **Account limits** — warns if `maxConnections` is configured
+6. **Helpful commands** — shows kubectl commands for viewing config and NATS server logs
 
 **Example for `account-connections`:**
 ```
