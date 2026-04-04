@@ -1,0 +1,53 @@
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: manager-role
+rules:
+- apiGroups:
+  - ""
+  resources:
+  - configmaps
+  - secrets
+  verbs:
+  - create
+  - get
+  - list
+  - patch
+  - update
+  - watch
+- apiGroups:
+  - nats.k8s.sandstorm.de
+  resources:
+  - natsaccounts
+  - natsusers
+  verbs:
+  - get
+  - list
+  - watch
+- apiGroups:
+  - nats.k8s.sandstorm.de
+  resources:
+  - natsaccounts/status
+  - natsclusters/status
+  - natsusers/status
+  verbs:
+  - get
+  - patch
+  - update
+- apiGroups:
+  - nats.k8s.sandstorm.de
+  resources:
+  - natsclusters
+  verbs:
+  - get
+  - list
+  - patch
+  - update
+  - watch
+- apiGroups:
+  - nats.k8s.sandstorm.de
+  resources:
+  - natsclusters/finalizers
+  verbs:
+  - update

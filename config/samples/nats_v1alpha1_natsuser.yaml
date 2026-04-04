@@ -1,0 +1,20 @@
+apiVersion: nats.k8s.sandstorm.de/v1alpha1
+kind: NatsUser
+metadata:
+  labels:
+    app.kubernetes.io/name: natsoperatorexperiment
+    app.kubernetes.io/managed-by: kustomize
+  name: app-user
+spec:
+  accountRef:
+    name: app-account
+  permissions:
+    publish:
+      allow:
+        - "events.>"
+        - "commands.>"
+      deny:
+        - "admin.>"
+    subscribe:
+      allow:
+        - "responses.>"
