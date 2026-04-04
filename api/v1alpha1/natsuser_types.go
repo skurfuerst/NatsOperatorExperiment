@@ -183,6 +183,11 @@ type NatsUserStatus struct {
 	// SecretRef references the Secret containing the user's NKey seed and public key.
 	// +optional
 	SecretRef *SecretReference `json:"secretRef,omitempty"`
+
+	// DebugCommand is a command to check this user's NATS connections.
+	// Run it via kubectl exec in the operator pod.
+	// +optional
+	DebugCommand string `json:"debugCommand,omitempty"`
 }
 
 // SecretReference references a Secret by name in the same namespace.

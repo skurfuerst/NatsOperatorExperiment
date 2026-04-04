@@ -27,6 +27,12 @@ type NatsClusterSpec struct {
 	// config hash, triggering a rolling restart on config changes.
 	// +optional
 	ServerRef *WorkloadReference `json:"serverRef,omitempty"`
+
+	// MonitoringPort is the HTTP monitoring port on the NATS server pods.
+	// Defaults to 8222. Used by the nats-debug CLI to query connection status.
+	// +optional
+	// +kubebuilder:default=8222
+	MonitoringPort *int32 `json:"monitoringPort,omitempty"`
 }
 
 // WorkloadReference references a Deployment or StatefulSet in the same namespace as the NatsCluster.

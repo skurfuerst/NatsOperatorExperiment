@@ -113,6 +113,11 @@ type NatsAccountStatus struct {
 	// UserCount is the number of NatsUsers in this account.
 	// +optional
 	UserCount int `json:"userCount,omitempty"`
+
+	// DebugCommand is a command to check this account's NATS connections.
+	// Run it via kubectl exec in the operator pod.
+	// +optional
+	DebugCommand string `json:"debugCommand,omitempty"`
 }
 
 // +kubebuilder:object:root=true

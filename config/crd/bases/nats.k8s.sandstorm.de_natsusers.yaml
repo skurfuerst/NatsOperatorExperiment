@@ -178,6 +178,11 @@ spec:
                   - type
                   type: object
                 type: array
+              debugCommand:
+                description: |-
+                  DebugCommand is a command to check this user's NATS connections.
+                  Run it via kubectl exec in the operator pod.
+                type: string
               nkeyPublicKey:
                 description: NKeyPublicKey is the user's NKey public key (starts with
                   'U').
