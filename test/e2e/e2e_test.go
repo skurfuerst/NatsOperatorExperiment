@@ -316,6 +316,9 @@ metadata:
 spec:
   clusterRef:
     name: e2e-cluster
+  userRules:
+    - action: grant
+      sameNamespace: true
   jetstream:
     maxMemory: "512Mi"
     maxStreams: 10
@@ -410,6 +413,9 @@ metadata:
 spec:
   clusterRef:
     name: e2e-cluster
+  userRules:
+    - action: grant
+      sameNamespace: true
 ---
 apiVersion: nats.k8s.sandstorm.de/v1alpha1
 kind: NatsUser
