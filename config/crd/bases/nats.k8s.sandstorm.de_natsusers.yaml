@@ -69,16 +69,20 @@ spec:
                   allowResponses:
                     description: |-
                       AllowResponses enables or configures response permissions for request-reply.
-                      If set with no fields, emits "allow_responses: true".
-                      If MaxMsgs or TTL is set, emits the structured form.
+                      Accepts a boolean or an object:
+                        - true           → emit "allow_responses: true"
+                        - false          → do not emit allow_responses
+                        - {}             → emit "allow_responses: true" (object boolean form)
+                        - {maxMsgs: N}   → emit structured form with max limit
+                        - {ttl: "5m"}   → emit structured form with time limit
                     properties:
                       maxMsgs:
                         description: MaxMsgs is the maximum number of response messages
-                          allowed.
+                          allowed (object form).
                         type: integer
                       ttl:
-                        description: TTL is the time window for responses (e.g., "5m",
-                          "30s").
+                        description: TTL is the time window for responses, e.g. "5m",
+                          "30s" (object form).
                         type: string
                     type: object
                   publish:

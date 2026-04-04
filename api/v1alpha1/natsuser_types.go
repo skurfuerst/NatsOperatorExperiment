@@ -17,6 +17,8 @@ limitations under the License.
 package v1alpha1
 
 import (
+	"encoding/json"
+
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
@@ -53,21 +55,108 @@ type Permissions struct {
 	Subscribe *PermissionRule `json:"subscribe,omitempty"`
 
 	// AllowResponses enables or configures response permissions for request-reply.
-	// If set with no fields, emits "allow_responses: true".
-	// If MaxMsgs or TTL is set, emits the structured form.
+	// Accepts a boolean or an object:
+	//   - true           → emit "allow_responses: true"
+	//   - false          → do not emit allow_responses
+	//   - {}             → emit "allow_responses: true" (object boolean form)
+	//   - {maxMsgs: N}   → emit structured form with max limit
+	//   - {ttl: "5m"}   → emit structured form with time limit
 	// +optional
-	AllowResponses *ResponsePermission `json:"allowResponses,omitempty"`
+	AllowResponses *AllowResponsesSpec `json:"allowResponses,omitempty"`
 }
 
-// ResponsePermission configures NATS allow_responses for request-reply patterns.
-type ResponsePermission struct {
-	// MaxMsgs is the maximum number of response messages allowed.
+// AllowResponsesSpec configures NATS allow_responses for request-reply patterns.
+// Supports both a boolean form (true/false) and an object form ({maxMsgs, ttl}).
+//
+// +kubebuilder:object:generate=false
+type AllowResponsesSpec struct {
+	// boolValue holds the boolean value when the boolean form (true/false) is used.
+	// json:"-" because custom UnmarshalJSON/MarshalJSON handle serialization entirely.
+	boolValue *bool `json:"-"`
+
+	// MaxMsgs is the maximum number of response messages allowed (object form).
 	// +optional
 	MaxMsgs *int `json:"maxMsgs,omitempty"`
 
-	// TTL is the time window for responses (e.g., "5m", "30s").
+	// TTL is the time window for responses, e.g. "5m", "30s" (object form).
 	// +optional
 	TTL *string `json:"ttl,omitempty"`
+}
+
+// UnmarshalJSON implements json.Unmarshaler, accepting both bool and object forms.
+func (a *AllowResponsesSpec) UnmarshalJSON(data []byte) error {
+	var b bool
+	if err := json.Unmarshal(data, &b); err == nil {
+		a.boolValue = &b
+		a.MaxMsgs = nil
+		a.TTL = nil
+		return nil
+	}
+	type alias struct {
+		MaxMsgs *int    `json:"maxMsgs,omitempty"`
+		TTL     *string `json:"ttl,omitempty"`
+	}
+	var obj alias
+	if err := json.Unmarshal(data, &obj); err != nil {
+		return err
+	}
+	a.boolValue = nil
+	a.MaxMsgs = obj.MaxMsgs
+	a.TTL = obj.TTL
+	return nil
+}
+
+// MarshalJSON implements json.Marshaler, emitting bool or object form.
+func (a AllowResponsesSpec) MarshalJSON() ([]byte, error) {
+	if a.boolValue != nil {
+		return json.Marshal(*a.boolValue)
+	}
+	type alias struct {
+		MaxMsgs *int    `json:"maxMsgs,omitempty"`
+		TTL     *string `json:"ttl,omitempty"`
+	}
+	return json.Marshal(alias{MaxMsgs: a.MaxMsgs, TTL: a.TTL})
+}
+
+// NewAllowResponsesBool creates an AllowResponsesSpec from a boolean value.
+// true emits "allow_responses: true"; false suppresses the directive entirely.
+func NewAllowResponsesBool(enabled bool) *AllowResponsesSpec {
+	return &AllowResponsesSpec{boolValue: &enabled}
+}
+
+// ShouldEmit returns false when the boolean false form was used; true otherwise.
+func (a *AllowResponsesSpec) ShouldEmit() bool {
+	if a.boolValue != nil {
+		return *a.boolValue
+	}
+	return true
+}
+
+// DeepCopyInto copies all fields including the unexported boolValue.
+func (in *AllowResponsesSpec) DeepCopyInto(out *AllowResponsesSpec) {
+	*out = *in
+	if in.boolValue != nil {
+		b := *in.boolValue
+		out.boolValue = &b
+	}
+	if in.MaxMsgs != nil {
+		m := *in.MaxMsgs
+		out.MaxMsgs = &m
+	}
+	if in.TTL != nil {
+		s := *in.TTL
+		out.TTL = &s
+	}
+}
+
+// DeepCopy creates a deep copy of AllowResponsesSpec.
+func (in *AllowResponsesSpec) DeepCopy() *AllowResponsesSpec {
+	if in == nil {
+		return nil
+	}
+	out := new(AllowResponsesSpec)
+	in.DeepCopyInto(out)
+	return out
 }
 
 // PermissionRule defines allowed and denied subjects.

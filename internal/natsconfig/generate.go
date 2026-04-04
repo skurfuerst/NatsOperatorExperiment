@@ -143,7 +143,7 @@ func writePermissions(b *strings.Builder, perms *PermissionsConfig, indent int) 
 		writePermissionRule(b, "subscribe", perms.Subscribe, indent+1)
 	}
 
-	if perms.AllowResponses != nil {
+	if perms.AllowResponses != nil && perms.AllowResponses.Enabled {
 		writeAllowResponses(b, perms.AllowResponses, indent+1)
 	}
 
