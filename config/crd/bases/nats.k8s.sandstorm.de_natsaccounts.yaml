@@ -46,14 +46,6 @@ spec:
           spec:
             description: NatsAccountSpec defines the desired state of NatsAccount.
             properties:
-              allowedUserNamespaces:
-                description: |-
-                  AllowedUserNamespaces is a list of regex patterns specifying which
-                  namespaces NatsUsers can reference this account from.
-                  If empty, only users in the same namespace as this account are allowed.
-                items:
-                  type: string
-                type: array
               clusterRef:
                 description: |-
                   ClusterRef references the NatsCluster this account belongs to.
@@ -146,6 +138,48 @@ spec:
                     format: int64
                     type: integer
                 type: object
+              userRules:
+                description: |-
+                  UserRules is an ordered list of rules controlling which NatsUsers can reference
+                  this account. Rules are evaluated in order; the first matching rule's action applies.
+                  If no rule matches, access is denied.
+                items:
+                  description: |-
+                    UserRule is a single ordered rule evaluated against a NatsUser's namespace.
+                    Exactly one of NamespaceRegex, NamespaceLabels, or SameNamespace must be set.
+                  properties:
+                    action:
+                      description: Action is grant or deny.
+                      enum:
+                      - grant
+                      - deny
+                      type: string
+                    namespaceLabels:
+                      additionalProperties:
+                        type: string
+                      description: |-
+                        NamespaceLabels matches namespaces whose labels contain all key/value pairs
+                        in this map (equality matching).
+                      type: object
+                    namespaceRegex:
+                      description: NamespaceRegex is a Go regular expression matched
+                        against the user's namespace name.
+                      type: string
+                    sameNamespace:
+                      description: SameNamespace, when true, matches users that are
+                        in the same namespace as this NatsAccount.
+                      type: boolean
+                  required:
+                  - action
+                  type: object
+                  x-kubernetes-validations:
+                  - message: exactly one of namespaceRegex, namespaceLabels, or sameNamespace
+                      must be set
+                    rule: (has(self.namespaceRegex) && !has(self.namespaceLabels)
+                      && !has(self.sameNamespace)) || (!has(self.namespaceRegex) &&
+                      has(self.namespaceLabels) && !has(self.sameNamespace)) || (!has(self.namespaceRegex)
+                      && !has(self.namespaceLabels) && has(self.sameNamespace))
+                type: array
             required:
             - clusterRef
             type: object

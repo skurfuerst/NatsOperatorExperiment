@@ -21,17 +21,48 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
+// UserRuleAction specifies whether a matching rule grants or denies access.
+// +kubebuilder:validation:Enum=grant;deny
+type UserRuleAction string
+
+const (
+	UserRuleActionGrant UserRuleAction = "grant"
+	UserRuleActionDeny  UserRuleAction = "deny"
+)
+
+// UserRule is a single ordered rule evaluated against a NatsUser's namespace.
+// Exactly one of NamespaceRegex, NamespaceLabels, or SameNamespace must be set.
+//
+// +kubebuilder:validation:XValidation:rule="(has(self.namespaceRegex) && !has(self.namespaceLabels) && !has(self.sameNamespace)) || (!has(self.namespaceRegex) && has(self.namespaceLabels) && !has(self.sameNamespace)) || (!has(self.namespaceRegex) && !has(self.namespaceLabels) && has(self.sameNamespace))",message="exactly one of namespaceRegex, namespaceLabels, or sameNamespace must be set"
+type UserRule struct {
+	// Action is grant or deny.
+	Action UserRuleAction `json:"action"`
+
+	// NamespaceRegex is a Go regular expression matched against the user's namespace name.
+	// +optional
+	NamespaceRegex *string `json:"namespaceRegex,omitempty"`
+
+	// NamespaceLabels matches namespaces whose labels contain all key/value pairs
+	// in this map (equality matching).
+	// +optional
+	NamespaceLabels map[string]string `json:"namespaceLabels,omitempty"`
+
+	// SameNamespace, when true, matches users that are in the same namespace as this NatsAccount.
+	// +optional
+	SameNamespace *bool `json:"sameNamespace,omitempty"`
+}
+
 // NatsAccountSpec defines the desired state of NatsAccount.
 type NatsAccountSpec struct {
 	// ClusterRef references the NatsCluster this account belongs to.
 	// Must be in the same namespace as this NatsAccount.
 	ClusterRef LocalObjectReference `json:"clusterRef"`
 
-	// AllowedUserNamespaces is a list of regex patterns specifying which
-	// namespaces NatsUsers can reference this account from.
-	// If empty, only users in the same namespace as this account are allowed.
+	// UserRules is an ordered list of rules controlling which NatsUsers can reference
+	// this account. Rules are evaluated in order; the first matching rule's action applies.
+	// If no rule matches, access is denied.
 	// +optional
-	AllowedUserNamespaces []string `json:"allowedUserNamespaces,omitempty"`
+	UserRules []UserRule `json:"userRules,omitempty"`
 
 	// JetStream configures JetStream resource limits for this account.
 	// +optional
