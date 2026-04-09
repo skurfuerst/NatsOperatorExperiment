@@ -8,12 +8,10 @@ rules:
   - ""
   resources:
   - configmaps
-  - secrets
   verbs:
   - create
   - get
   - list
-  - patch
   - update
   - watch
 - apiGroups:
@@ -37,6 +35,14 @@ rules:
   - pods/exec
   verbs:
   - create
+- apiGroups:
+  - ""
+  resources:
+  - secrets
+  verbs:
+  - create
+  - get
+  - update
 - apiGroups:
   - apps
   resources:

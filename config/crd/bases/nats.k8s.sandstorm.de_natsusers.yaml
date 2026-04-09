@@ -71,6 +71,8 @@ spec:
                   Has no effect when InsecureSharedInboxPrefix is true.
                   The NATS client must use the same prefix:
                     nats.CustomInboxPrefix("<prefix>") in Go, or --inbox-prefix <prefix> in CLI.
+                maxLength: 64
+                pattern: ^[A-Za-z0-9_]+$
                 type: string
               insecureSharedInboxPrefix:
                 description: |-
@@ -112,13 +114,22 @@ spec:
                         description: Allow is a list of subjects to allow.
                         items:
                           type: string
+                        maxItems: 100
                         type: array
                       deny:
                         description: Deny is a list of subjects to deny.
                         items:
                           type: string
+                        maxItems: 100
                         type: array
                     type: object
+                    x-kubernetes-validations:
+                    - message: each allow subject must be between 1 and 253 characters
+                      rule: '!has(self.allow) || self.allow.all(s, size(s) >= 1 &&
+                        size(s) <= 253)'
+                    - message: each deny subject must be between 1 and 253 characters
+                      rule: '!has(self.deny) || self.deny.all(s, size(s) >= 1 && size(s)
+                        <= 253)'
                   subscribe:
                     description: Subscribe defines subscribe permissions.
                     properties:
@@ -126,13 +137,22 @@ spec:
                         description: Allow is a list of subjects to allow.
                         items:
                           type: string
+                        maxItems: 100
                         type: array
                       deny:
                         description: Deny is a list of subjects to deny.
                         items:
                           type: string
+                        maxItems: 100
                         type: array
                     type: object
+                    x-kubernetes-validations:
+                    - message: each allow subject must be between 1 and 253 characters
+                      rule: '!has(self.allow) || self.allow.all(s, size(s) >= 1 &&
+                        size(s) <= 253)'
+                    - message: each deny subject must be between 1 and 253 characters
+                      rule: '!has(self.deny) || self.deny.all(s, size(s) >= 1 && size(s)
+                        <= 253)'
                 type: object
             required:
             - accountRef

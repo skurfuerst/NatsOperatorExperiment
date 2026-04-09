@@ -36,6 +36,8 @@ type NatsUserSpec struct {
 	// The NATS client must use the same prefix:
 	//   nats.CustomInboxPrefix("<prefix>") in Go, or --inbox-prefix <prefix> in CLI.
 	// +optional
+	// +kubebuilder:validation:MaxLength=64
+	// +kubebuilder:validation:Pattern="^[A-Za-z0-9_]+$"
 	InboxPrefix *string `json:"inboxPrefix,omitempty"`
 
 	// InsecureSharedInboxPrefix disables inbox isolation for this user.
@@ -180,13 +182,18 @@ func (in *AllowResponsesSpec) DeepCopy() *AllowResponsesSpec {
 }
 
 // PermissionRule defines allowed and denied subjects.
+//
+// +kubebuilder:validation:XValidation:rule="!has(self.allow) || self.allow.all(s, size(s) >= 1 && size(s) <= 253)",message="each allow subject must be between 1 and 253 characters"
+// +kubebuilder:validation:XValidation:rule="!has(self.deny) || self.deny.all(s, size(s) >= 1 && size(s) <= 253)",message="each deny subject must be between 1 and 253 characters"
 type PermissionRule struct {
 	// Allow is a list of subjects to allow.
 	// +optional
+	// +kubebuilder:validation:MaxItems=100
 	Allow []string `json:"allow,omitempty"`
 
 	// Deny is a list of subjects to deny.
 	// +optional
+	// +kubebuilder:validation:MaxItems=100
 	Deny []string `json:"deny,omitempty"`
 }
 
