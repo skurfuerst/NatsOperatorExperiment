@@ -21,6 +21,7 @@ import (
 	"crypto/sha256"
 	"fmt"
 	"sort"
+	"time"
 
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
@@ -105,19 +106,19 @@ func (r *NatsClusterReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 	// 2. List NatsAccounts in same namespace referencing this cluster
 	matchingAccounts, err := r.listMatchingAccounts(ctx, cluster)
 	if err != nil {
-		r.setClusterCondition(ctx, cluster, metav1.ConditionFalse, natsv1alpha1.ReasonReconcileError, err.Error())
+		_ = r.setClusterCondition(ctx, cluster, metav1.ConditionFalse, natsv1alpha1.ReasonReconcileError, err.Error())
 		return ctrl.Result{}, err
 	}
 
 	// 3. List all NatsUsers once (fixes O(N) per-account listing)
 	allUsers, err := r.listAllUsers(ctx)
 	if err != nil {
-		r.setClusterCondition(ctx, cluster, metav1.ConditionFalse, natsv1alpha1.ReasonReconcileError, err.Error())
+		_ = r.setClusterCondition(ctx, cluster, metav1.ConditionFalse, natsv1alpha1.ReasonReconcileError, err.Error())
 		return ctrl.Result{}, err
 	}
 
 	// 4. For each account, match users and ensure NKey secrets
-	accountsWithUsers, totalUsers, err := r.reconcileAccountsAndUsers(ctx, cluster, matchingAccounts, allUsers)
+	accountsWithUsers, totalUsers, statusUpdateFailed, err := r.reconcileAccountsAndUsers(ctx, cluster, matchingAccounts, allUsers)
 	if err != nil {
 		return ctrl.Result{}, err
 	}
@@ -129,7 +130,7 @@ func (r *NatsClusterReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 	// 6. Compute hash and create/update ConfigMap
 	hash := fmt.Sprintf("%x", sha256.Sum256([]byte(configStr)))
 	if err := r.ensureConfigMap(ctx, cluster, configStr); err != nil {
-		r.setClusterCondition(ctx, cluster, metav1.ConditionFalse, natsv1alpha1.ReasonReconcileError, err.Error())
+		_ = r.setClusterCondition(ctx, cluster, metav1.ConditionFalse, natsv1alpha1.ReasonReconcileError, err.Error())
 		return ctrl.Result{}, err
 	}
 
@@ -137,7 +138,7 @@ func (r *NatsClusterReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 	if hash != cluster.Status.LastConfigHash && cluster.Spec.ServerRef != nil {
 		if err := r.reloadNatsPods(ctx, cluster); err != nil {
 			log.Error(err, "failed to reload NATS pods")
-			r.setClusterCondition(ctx, cluster, metav1.ConditionFalse, natsv1alpha1.ReasonReconcileError,
+			_ = r.setClusterCondition(ctx, cluster, metav1.ConditionFalse, natsv1alpha1.ReasonReconcileError,
 				fmt.Sprintf("failed to reload NATS pods: %v", err))
 			return ctrl.Result{}, err
 		}
@@ -157,6 +158,13 @@ func (r *NatsClusterReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 	})
 	if err := r.Status().Update(ctx, cluster); err != nil {
 		return ctrl.Result{}, err
+	}
+
+	// 9. If any status updates failed during reconciliation, requeue to retry them.
+	// We use RequeueAfter instead of returning an error to avoid rate-limiting the workqueue.
+	if statusUpdateFailed {
+		log.Info("requeuing due to failed status updates on accounts/users")
+		return ctrl.Result{RequeueAfter: 5 * time.Second}, nil
 	}
 
 	return ctrl.Result{}, nil
@@ -193,18 +201,18 @@ func (r *NatsClusterReconciler) listAllUsers(ctx context.Context) ([]natsv1alpha
 
 // reconcileAccountsAndUsers processes each account: validates rules, matches users,
 // ensures NKey secrets, and updates status conditions.
+// Returns statusUpdateFailed=true if any account/user status update failed (caller should requeue).
 func (r *NatsClusterReconciler) reconcileAccountsAndUsers(
 	ctx context.Context,
 	cluster *natsv1alpha1.NatsCluster,
 	accounts []natsv1alpha1.NatsAccount,
 	allUsers []natsv1alpha1.NatsUser,
-) ([]natsconfig.AccountWithUsers, int, error) {
+) (accountsWithUsers []natsconfig.AccountWithUsers, totalUsers int, statusUpdateFailed bool, err error) {
 	log := logf.FromContext(ctx)
 	evaluator := r.getUserRuleEvaluator()
 	nkeyMgr := r.getNKeySecretManager()
 
-	accountsWithUsers := make([]natsconfig.AccountWithUsers, 0, len(accounts))
-	totalUsers := 0
+	accountsWithUsers = make([]natsconfig.AccountWithUsers, 0, len(accounts))
 
 	for i := range accounts {
 		acct := &accounts[i]
@@ -212,7 +220,9 @@ func (r *NatsClusterReconciler) reconcileAccountsAndUsers(
 		// Pre-validate all regex rules for this account
 		if err := evaluator.ValidateRegexRules(acct.Spec.UserRules); err != nil {
 			log.Error(err, "invalid namespaceRegex in userRules", "account", acct.Name)
-			r.setAccountCondition(ctx, acct, metav1.ConditionFalse, natsv1alpha1.ReasonInvalidRegex, err.Error())
+			if condErr := r.setAccountCondition(ctx, acct, metav1.ConditionFalse, natsv1alpha1.ReasonInvalidRegex, err.Error()); condErr != nil {
+				statusUpdateFailed = true
+			}
 			continue
 		}
 
@@ -226,32 +236,38 @@ func (r *NatsClusterReconciler) reconcileAccountsAndUsers(
 			}
 
 			// Evaluate user rules
-			allowed, err := evaluator.Evaluate(ctx, acct.Spec.UserRules, user.Namespace, acct.Namespace)
-			if err != nil {
-				log.Error(err, "failed to evaluate user rules", "user", user.Name)
-				r.setUserCondition(ctx, user, metav1.ConditionFalse, natsv1alpha1.ReasonNamespaceFetchError,
-					fmt.Sprintf("error evaluating user rules for namespace %q: %v", user.Namespace, err))
+			allowed, ruleErr := evaluator.Evaluate(ctx, acct.Spec.UserRules, user.Namespace, acct.Namespace)
+			if ruleErr != nil {
+				log.Error(ruleErr, "failed to evaluate user rules", "user", user.Name)
+				if condErr := r.setUserCondition(ctx, user, metav1.ConditionFalse, natsv1alpha1.ReasonNamespaceFetchError,
+					fmt.Sprintf("error evaluating user rules for namespace %q: %v", user.Namespace, ruleErr)); condErr != nil {
+					statusUpdateFailed = true
+				}
 				continue
 			}
 			if !allowed {
 				log.Info("user not allowed by rules", "user", user.Name, "userNamespace", user.Namespace, "account", acct.Name)
-				r.setUserCondition(ctx, user, metav1.ConditionFalse, natsv1alpha1.ReasonNamespaceNotAllowed,
-					fmt.Sprintf("namespace %q not allowed by account %q userRules", user.Namespace, acct.Name))
+				if condErr := r.setUserCondition(ctx, user, metav1.ConditionFalse, natsv1alpha1.ReasonNamespaceNotAllowed,
+					fmt.Sprintf("namespace %q not allowed by account %q userRules", user.Namespace, acct.Name)); condErr != nil {
+					statusUpdateFailed = true
+				}
 				continue
 			}
 
 			// Ensure NKey secret exists
-			publicKey, inboxPrefix, err := nkeyMgr.EnsureNKeySecret(ctx, user)
-			if err != nil {
-				log.Error(err, "failed to ensure NKey secret", "user", user.Name)
-				return nil, 0, err
+			publicKey, inboxPrefix, nkeyErr := nkeyMgr.EnsureNKeySecret(ctx, user)
+			if nkeyErr != nil {
+				log.Error(nkeyErr, "failed to ensure NKey secret", "user", user.Name)
+				return nil, 0, statusUpdateFailed, nkeyErr
 			}
 
 			// Set debug command and user Ready condition
 			if cluster.Spec.ServerRef != nil {
 				user.Status.DebugCommand = r.buildDebugCommand(fmt.Sprintf("nats-debug user-connections --cluster %s --namespace %s --nkey %s", cluster.Name, cluster.Namespace, publicKey))
 			}
-			r.setUserCondition(ctx, user, metav1.ConditionTrue, natsv1alpha1.ReasonReconciled, "User reconciled successfully")
+			if condErr := r.setUserCondition(ctx, user, metav1.ConditionTrue, natsv1alpha1.ReasonReconciled, "User reconciled successfully"); condErr != nil {
+				statusUpdateFailed = true
+			}
 
 			usersWithKeys = append(usersWithKeys, natsconfig.UserWithPublicKey{
 				User:        *user,
@@ -270,7 +286,9 @@ func (r *NatsClusterReconciler) reconcileAccountsAndUsers(
 		if cluster.Spec.ServerRef != nil {
 			acct.Status.DebugCommand = r.buildDebugCommand(fmt.Sprintf("nats-debug account-connections --cluster %s --namespace %s --account %s", cluster.Name, cluster.Namespace, acct.Name))
 		}
-		r.setAccountCondition(ctx, acct, metav1.ConditionTrue, natsv1alpha1.ReasonReconciled, "Account reconciled successfully")
+		if condErr := r.setAccountCondition(ctx, acct, metav1.ConditionTrue, natsv1alpha1.ReasonReconciled, "Account reconciled successfully"); condErr != nil {
+			statusUpdateFailed = true
+		}
 
 		totalUsers += len(usersWithKeys)
 		accountsWithUsers = append(accountsWithUsers, natsconfig.AccountWithUsers{
@@ -279,7 +297,7 @@ func (r *NatsClusterReconciler) reconcileAccountsAndUsers(
 		})
 	}
 
-	return accountsWithUsers, totalUsers, nil
+	return accountsWithUsers, totalUsers, statusUpdateFailed, nil
 }
 
 // userReferencesAccount checks if a user's accountRef points to the given account.
@@ -366,8 +384,7 @@ func (r *NatsClusterReconciler) reloadNatsPods(ctx context.Context, cluster *nat
 	return nil
 }
 
-//nolint:unparam // status kept as parameter for consistency with setAccountCondition/setUserCondition
-func (r *NatsClusterReconciler) setClusterCondition(ctx context.Context, cluster *natsv1alpha1.NatsCluster, status metav1.ConditionStatus, reason, message string) {
+func (r *NatsClusterReconciler) setClusterCondition(ctx context.Context, cluster *natsv1alpha1.NatsCluster, status metav1.ConditionStatus, reason, message string) error {
 	meta.SetStatusCondition(&cluster.Status.Conditions, metav1.Condition{
 		Type:               natsv1alpha1.ConditionReady,
 		Status:             status,
@@ -377,10 +394,12 @@ func (r *NatsClusterReconciler) setClusterCondition(ctx context.Context, cluster
 	})
 	if err := r.Status().Update(ctx, cluster); err != nil {
 		logf.FromContext(ctx).Error(err, "failed to update cluster condition")
+		return err
 	}
+	return nil
 }
 
-func (r *NatsClusterReconciler) setAccountCondition(ctx context.Context, account *natsv1alpha1.NatsAccount, status metav1.ConditionStatus, reason, message string) {
+func (r *NatsClusterReconciler) setAccountCondition(ctx context.Context, account *natsv1alpha1.NatsAccount, status metav1.ConditionStatus, reason, message string) error {
 	meta.SetStatusCondition(&account.Status.Conditions, metav1.Condition{
 		Type:               natsv1alpha1.ConditionReady,
 		Status:             status,
@@ -390,10 +409,12 @@ func (r *NatsClusterReconciler) setAccountCondition(ctx context.Context, account
 	})
 	if err := r.Status().Update(ctx, account); err != nil {
 		logf.FromContext(ctx).Error(err, "failed to update account condition")
+		return err
 	}
+	return nil
 }
 
-func (r *NatsClusterReconciler) setUserCondition(ctx context.Context, user *natsv1alpha1.NatsUser, status metav1.ConditionStatus, reason, message string) {
+func (r *NatsClusterReconciler) setUserCondition(ctx context.Context, user *natsv1alpha1.NatsUser, status metav1.ConditionStatus, reason, message string) error {
 	meta.SetStatusCondition(&user.Status.Conditions, metav1.Condition{
 		Type:               natsv1alpha1.ConditionReady,
 		Status:             status,
@@ -403,7 +424,9 @@ func (r *NatsClusterReconciler) setUserCondition(ctx context.Context, user *nats
 	})
 	if err := r.Status().Update(ctx, user); err != nil {
 		logf.FromContext(ctx).Error(err, "failed to update user condition")
+		return err
 	}
+	return nil
 }
 
 // buildDebugCommand wraps a bare nats-debug command with kubectl exec prefix
@@ -430,7 +453,10 @@ func (r *NatsClusterReconciler) mapAccountToCluster(ctx context.Context, obj cli
 }
 
 // mapUserToCluster maps a NatsUser change to the NatsCluster via NatsAccount.
+// On transient API errors it falls back to reconciling all clusters in the namespace
+// so that events are not silently lost.
 func (r *NatsClusterReconciler) mapUserToCluster(ctx context.Context, obj client.Object) []reconcile.Request {
+	log := logf.FromContext(ctx)
 	user, ok := obj.(*natsv1alpha1.NatsUser)
 	if !ok {
 		return nil
@@ -447,7 +473,14 @@ func (r *NatsClusterReconciler) mapUserToCluster(ctx context.Context, obj client
 		Name:      user.Spec.AccountRef.Name,
 		Namespace: accountNs,
 	}, account); err != nil {
-		return nil
+		if errors.IsNotFound(err) {
+			return nil
+		}
+		// Transient error — fall back to reconciling all clusters in the namespace
+		log.Error(err, "failed to resolve account for user, falling back to namespace-wide reconcile",
+			"user", user.Name, "userNamespace", user.Namespace,
+			"account", user.Spec.AccountRef.Name, "accountNamespace", accountNs)
+		return r.allClustersInNamespace(ctx, accountNs)
 	}
 
 	return []reconcile.Request{
@@ -456,6 +489,23 @@ func (r *NatsClusterReconciler) mapUserToCluster(ctx context.Context, obj client
 			Namespace: account.Namespace,
 		}},
 	}
+}
+
+// allClustersInNamespace returns reconcile requests for every NatsCluster in the
+// given namespace. Used as a fallback when the exact cluster can't be resolved.
+func (r *NatsClusterReconciler) allClustersInNamespace(ctx context.Context, namespace string) []reconcile.Request {
+	clusterList := &natsv1alpha1.NatsClusterList{}
+	if err := r.List(ctx, clusterList, client.InNamespace(namespace)); err != nil {
+		logf.FromContext(ctx).Error(err, "failed to list clusters for fallback reconcile", "namespace", namespace)
+		return nil
+	}
+	requests := make([]reconcile.Request, 0, len(clusterList.Items))
+	for _, c := range clusterList.Items {
+		requests = append(requests, reconcile.Request{
+			NamespacedName: types.NamespacedName{Name: c.Name, Namespace: c.Namespace},
+		})
+	}
+	return requests
 }
 
 // SetupWithManager sets up the controller with the Manager.
