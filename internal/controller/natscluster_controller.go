@@ -384,6 +384,7 @@ func (r *NatsClusterReconciler) reloadNatsPods(ctx context.Context, cluster *nat
 	return nil
 }
 
+//nolint:unparam // status kept as parameter for consistency with setAccountCondition/setUserCondition
 func (r *NatsClusterReconciler) setClusterCondition(ctx context.Context, cluster *natsv1alpha1.NatsCluster, status metav1.ConditionStatus, reason, message string) error {
 	meta.SetStatusCondition(&cluster.Status.Conditions, metav1.Condition{
 		Type:               natsv1alpha1.ConditionReady,
