@@ -430,6 +430,76 @@ func TestGenerateUserWithInboxPrefixSubscribeRules(t *testing.T) {
 	}
 }
 
+func TestGenerateSentinelWhenNoUsers_EmptyConfig(t *testing.T) {
+	cfg := &NatsConfig{Accounts: map[string]AccountConfig{}}
+	result := Generate(cfg)
+	if !strings.Contains(result, "$G") {
+		t.Error("expected $G sentinel account when no users provisioned")
+	}
+	if !strings.Contains(result, "deny-all sentinel") {
+		t.Error("expected explanatory comment about the sentinel")
+	}
+	if !strings.Contains(result, `deny: [">"]`) {
+		t.Error("expected sentinel user to deny all publish/subscribe")
+	}
+	if strings.Count(result, "nkey:") != 1 {
+		t.Errorf("expected exactly 1 nkey (the sentinel), got %d", strings.Count(result, "nkey:"))
+	}
+}
+
+func TestGenerateSentinelWhenNoUsers_AccountsButZeroUsers(t *testing.T) {
+	cfg := &NatsConfig{
+		Accounts: map[string]AccountConfig{
+			"sandstorm": {
+				Limits: &LimitsConfig{MaxPayload: "1MI"},
+			},
+		},
+	}
+	result := Generate(cfg)
+	if !strings.Contains(result, "$G") {
+		t.Error("expected $G sentinel even when accounts exist but have no users")
+	}
+	if !strings.Contains(result, "sandstorm") {
+		t.Error("expected real account to still be present")
+	}
+	if !strings.Contains(result, "max_payload: 1MI") {
+		t.Error("expected real account's limits to still render")
+	}
+	if strings.Count(result, "nkey:") != 1 {
+		t.Errorf("expected exactly 1 nkey (the sentinel), got %d", strings.Count(result, "nkey:"))
+	}
+}
+
+func TestGenerateNoSentinelWhenAtLeastOneUserExists(t *testing.T) {
+	cfg := &NatsConfig{
+		Accounts: map[string]AccountConfig{
+			"sandstorm": {
+				Users: []UserConfig{{NKey: "UREAL1"}},
+			},
+		},
+	}
+	result := Generate(cfg)
+	if strings.Contains(result, "$G") {
+		t.Error("must NOT inject sentinel when real users exist")
+	}
+	if strings.Contains(result, "deny-all sentinel") {
+		t.Error("must NOT include sentinel comment when real users exist")
+	}
+	if strings.Count(result, "nkey:") != 1 {
+		t.Errorf("expected exactly 1 nkey (the real user), got %d", strings.Count(result, "nkey:"))
+	}
+}
+
+func TestGenerateSentinelIsStableAcrossCalls(t *testing.T) {
+	cfg := &NatsConfig{Accounts: map[string]AccountConfig{}}
+	first := Generate(cfg)
+	for i := 0; i < 3; i++ {
+		if got := Generate(cfg); got != first {
+			t.Fatalf("sentinel output changed between calls — would cause reconcile churn.\nfirst:\n%s\nlater:\n%s", first, got)
+		}
+	}
+}
+
 func TestGenerateDeterministicAccountOrder(t *testing.T) {
 	cfg := &NatsConfig{
 		Accounts: map[string]AccountConfig{

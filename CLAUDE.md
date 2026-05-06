@@ -36,4 +36,5 @@ If `go mod tidy` fails with DNS timeouts, use `GOPROXY=direct go mod tidy`.
 - TDD: write tests first, then implement
 - Plans stored in `docs/` as `YYYY_MM_DD_A_topicName.md`
 - No `defaultPermissions` on accounts (security: permissions must be explicit per user)
+- Safe-by-default bootstrap: when zero `NatsUser` resources exist across all accounts, `natsconfig.Generate` injects a deny-all sentinel user into `$G` so NATS rejects anonymous clients instead of silently routing them to `$G`. Sentinel nkey is a hardcoded throwaway constant for stability across reconciles.
 - Own Go types for NATS config generation (not importing nats-server)
