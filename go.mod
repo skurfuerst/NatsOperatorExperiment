@@ -1,4 +1,4 @@
-module github.com/skurfuerst/natsoperatorexperiment
+module github.com/sandstorm/NatsAuthOperator
 
 go 1.24.0
 

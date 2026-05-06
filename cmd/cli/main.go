@@ -3,7 +3,7 @@ package main
 import (
 	"os"
 
-	"github.com/skurfuerst/natsoperatorexperiment/cmd/cli/cmd"
+	"github.com/sandstorm/NatsAuthOperator/cmd/cli/cmd"
 )
 
 func main() {

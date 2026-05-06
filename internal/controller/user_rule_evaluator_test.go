@@ -8,7 +8,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
-	natsv1alpha1 "github.com/skurfuerst/natsoperatorexperiment/api/v1alpha1"
+	natsv1alpha1 "github.com/sandstorm/NatsAuthOperator/api/v1alpha1"
 )
 
 // mockNamespaceFetcher is a test double for NamespaceFetcher.

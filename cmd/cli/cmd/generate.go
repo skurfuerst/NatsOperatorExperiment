@@ -6,8 +6,8 @@ import (
 
 	"github.com/spf13/cobra"
 
-	natsv1alpha1 "github.com/skurfuerst/natsoperatorexperiment/api/v1alpha1"
-	"github.com/skurfuerst/natsoperatorexperiment/internal/natsconfig"
+	natsv1alpha1 "github.com/sandstorm/NatsAuthOperator/api/v1alpha1"
+	"github.com/sandstorm/NatsAuthOperator/internal/natsconfig"
 )
 
 var generateCmd = &cobra.Command{

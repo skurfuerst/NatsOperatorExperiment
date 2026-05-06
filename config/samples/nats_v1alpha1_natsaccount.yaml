@@ -2,7 +2,7 @@ apiVersion: nats.k8s.sandstorm.de/v1alpha1
 kind: NatsAccount
 metadata:
   labels:
-    app.kubernetes.io/name: natsoperatorexperiment
+    app.kubernetes.io/name: nats-auth-operator
     app.kubernetes.io/managed-by: kustomize
   name: app-account
 spec:

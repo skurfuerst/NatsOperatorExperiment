@@ -18,8 +18,8 @@ import (
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
-	natsv1alpha1 "github.com/skurfuerst/natsoperatorexperiment/api/v1alpha1"
-	"github.com/skurfuerst/natsoperatorexperiment/internal/natsmonitor"
+	natsv1alpha1 "github.com/sandstorm/NatsAuthOperator/api/v1alpha1"
+	"github.com/sandstorm/NatsAuthOperator/internal/natsmonitor"
 )
 
 var scheme = runtime.NewScheme()

@@ -8,7 +8,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/serializer"
 
-	natsv1alpha1 "github.com/skurfuerst/natsoperatorexperiment/api/v1alpha1"
+	natsv1alpha1 "github.com/sandstorm/NatsAuthOperator/api/v1alpha1"
 )
 
 var scheme = runtime.NewScheme()

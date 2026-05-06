@@ -35,7 +35,7 @@ go = "1.24"
 
 ```bash
 mise install
-operator-sdk init --domain k8s.sandstorm.de --repo github.com/skurfuerst/natsoperatorexperiment
+operator-sdk init --domain k8s.sandstorm.de --repo github.com/sandstorm/NatsAuthOperator
 operator-sdk create api --group nats --version v1alpha1 --kind NatsCluster --resource --controller
 operator-sdk create api --group nats --version v1alpha1 --kind NatsAccount --resource  # no --controller
 operator-sdk create api --group nats --version v1alpha1 --kind NatsUser --resource     # no --controller

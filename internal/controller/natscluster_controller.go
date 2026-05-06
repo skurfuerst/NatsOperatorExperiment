@@ -37,8 +37,8 @@ import (
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
-	natsv1alpha1 "github.com/skurfuerst/natsoperatorexperiment/api/v1alpha1"
-	"github.com/skurfuerst/natsoperatorexperiment/internal/natsconfig"
+	natsv1alpha1 "github.com/sandstorm/NatsAuthOperator/api/v1alpha1"
+	"github.com/sandstorm/NatsAuthOperator/internal/natsconfig"
 )
 
 // NatsClusterReconciler reconciles a NatsCluster object

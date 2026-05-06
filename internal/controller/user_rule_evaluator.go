@@ -9,7 +9,7 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
-	natsv1alpha1 "github.com/skurfuerst/natsoperatorexperiment/api/v1alpha1"
+	natsv1alpha1 "github.com/sandstorm/NatsAuthOperator/api/v1alpha1"
 )
 
 // NamespaceFetcher retrieves a Namespace by name.

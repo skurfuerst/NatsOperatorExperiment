@@ -30,7 +30,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
-	natsv1alpha1 "github.com/skurfuerst/natsoperatorexperiment/api/v1alpha1"
+	natsv1alpha1 "github.com/sandstorm/NatsAuthOperator/api/v1alpha1"
 )
 
 // fakePodReloader records which pods received a SIGHUP reload call.

@@ -40,8 +40,8 @@ import (
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 	"sigs.k8s.io/controller-runtime/pkg/webhook"
 
-	natsv1alpha1 "github.com/skurfuerst/natsoperatorexperiment/api/v1alpha1"
-	"github.com/skurfuerst/natsoperatorexperiment/internal/controller"
+	natsv1alpha1 "github.com/sandstorm/NatsAuthOperator/api/v1alpha1"
+	"github.com/sandstorm/NatsAuthOperator/internal/controller"
 	// +kubebuilder:scaffold:imports
 )
 

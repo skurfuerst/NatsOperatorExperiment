@@ -12,8 +12,8 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 
-	natsv1alpha1 "github.com/skurfuerst/natsoperatorexperiment/api/v1alpha1"
-	nkeysutil "github.com/skurfuerst/natsoperatorexperiment/internal/nkeys"
+	natsv1alpha1 "github.com/sandstorm/NatsAuthOperator/api/v1alpha1"
+	nkeysutil "github.com/sandstorm/NatsAuthOperator/internal/nkeys"
 )
 
 // NKeySecretManager manages NKey secrets for NatsUsers.

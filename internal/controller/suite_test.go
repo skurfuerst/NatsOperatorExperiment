@@ -32,7 +32,7 @@ import (
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
 
-	natsv1alpha1 "github.com/skurfuerst/natsoperatorexperiment/api/v1alpha1"
+	natsv1alpha1 "github.com/sandstorm/NatsAuthOperator/api/v1alpha1"
 	// +kubebuilder:scaffold:imports
 )
 
