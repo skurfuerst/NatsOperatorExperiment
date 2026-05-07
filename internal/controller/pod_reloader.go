@@ -28,6 +28,7 @@ import (
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/remotecommand"
+	logf "sigs.k8s.io/controller-runtime/pkg/log"
 )
 
 // AuthConfPath is the canonical mount path for the rendered NATS auth.conf
@@ -85,10 +86,18 @@ func (r *SpdyPodReloader) ReloadPod(ctx context.Context, namespace, podName stri
 	})
 }
 
-// IsConfigCurrent execs `head -n1 <AuthConfPath>` inside the pod and parses
-// the "# hash: <sha256>" header, returning true iff it matches expectedHash.
-// File absent / unreadable / no header → returns false (treated as stale).
+// IsConfigCurrent execs `cat <AuthConfPath>` inside the pod and parses the
+// "# hash: <sha256>" header from the first line, returning true iff it
+// matches expectedHash. We use `cat` rather than `head -n1` because not every
+// minimal NATS container image ships head on PATH; cat is universally
+// available wherever a shell-less SPDY exec works at all.
+//
+// Returns (false, nil) when the file is absent / unreadable / has no header,
+// after logging diagnostic detail so unexpected exec failures are visible
+// rather than silently looping the reconciler.
 func (r *SpdyPodReloader) IsConfigCurrent(ctx context.Context, namespace, podName, expectedHash string) (bool, error) {
+	log := logf.FromContext(ctx)
+
 	clientset, err := kubernetes.NewForConfig(r.RestConfig)
 	if err != nil {
 		return false, err
@@ -100,7 +109,7 @@ func (r *SpdyPodReloader) IsConfigCurrent(ctx context.Context, namespace, podNam
 		Namespace(namespace).
 		SubResource("exec").
 		VersionedParams(&corev1.PodExecOptions{
-			Command: []string{"head", "-n", "1", AuthConfPath},
+			Command: []string{"cat", AuthConfPath},
 			Stdin:   false,
 			Stdout:  true,
 			Stderr:  true,
@@ -113,29 +122,59 @@ func (r *SpdyPodReloader) IsConfigCurrent(ctx context.Context, namespace, podNam
 	}
 
 	var stdout, stderr bytes.Buffer
-	if err := executor.StreamWithContext(ctx, remotecommand.StreamOptions{
+	streamErr := executor.StreamWithContext(ctx, remotecommand.StreamOptions{
 		Stdout: &stdout,
 		Stderr: &stderr,
-	}); err != nil {
-		// File missing / unreadable — treat as "stale", not as a hard error.
+	})
+	if streamErr != nil {
+		// Log loudly so we don't silently loop forever. Even on error we
+		// fall through to parse stdout — some non-zero exits still produce
+		// useful output (and we'd rather try than pretend it's stale).
+		log.Info("exec to read auth.conf returned error",
+			"pod", podName, "err", streamErr.Error(),
+			"stderr", stderr.String(), "stdoutLen", stdout.Len())
+	}
+	parsed := parseHashHeader(stdout.String())
+	if parsed == "" {
+		log.Info("could not parse hash header from pod auth.conf",
+			"pod", podName, "stdoutPrefix", stdoutPreview(stdout.String()),
+			"stderr", stderr.String())
 		return false, nil
 	}
-	return parseHashHeader(stdout.String()) == expectedHash, nil
+	return parsed == expectedHash, nil
 }
 
-// parseHashHeader extracts the sha256 from a "# hash: <sha256>" line.
-// Returns "" if the input does not start with a recognizable header.
-func parseHashHeader(s string) string {
-	line := s
-	if i := strings.IndexByte(line, '\n'); i >= 0 {
-		line = line[:i]
+// stdoutPreview returns the first ~120 chars of s, with newlines escaped,
+// suitable for one-line log output.
+func stdoutPreview(s string) string {
+	const max = 120
+	if len(s) > max {
+		s = s[:max]
 	}
-	line = strings.TrimSpace(line)
+	return strings.ReplaceAll(s, "\n", `\n`)
+}
+
+// parseHashHeader extracts the sha256 from the first non-empty line of s
+// when it has the form "# hash: <sha256>". Tolerates leading blank lines,
+// CR characters and surrounding whitespace. Returns "" if no recognizable
+// header line is found within the first few lines.
+func parseHashHeader(s string) string {
 	const prefix = "# hash:"
-	if !strings.HasPrefix(line, prefix) {
+	for i, line := range strings.SplitN(s, "\n", 8) {
+		_ = i
+		line = strings.TrimRight(line, "\r")
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		if strings.HasPrefix(line, prefix) {
+			return strings.TrimSpace(strings.TrimPrefix(line, prefix))
+		}
+		// First non-empty line wasn't a hash header — give up; we don't
+		// want to scan past the header zone.
 		return ""
 	}
-	return strings.TrimSpace(strings.TrimPrefix(line, prefix))
+	return ""
 }
 
 // FormatHashHeader returns the "# hash: <sha256>\n" line that is prepended
