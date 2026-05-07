@@ -1,5 +1,5 @@
 [tools]
-go = "1.24"
+go = "1.25"
 kind = "latest"
 
 # operator-sdk v1.42.2 installed manually to /usr/local/bin/operator-sdk

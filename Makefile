@@ -134,7 +134,18 @@ setup-test-e2e: ## Set up a Kind cluster for e2e tests if it does not exist
 
 .PHONY: test-e2e
 test-e2e: setup-test-e2e manifests generate fmt vet ## Run the e2e tests. Expected an isolated environment using Kind.
-	KIND_CLUSTER=$(KIND_CLUSTER) go test ./test/e2e/ -v -ginkgo.v
+	# Pin every kubectl/kind/Helm call inside the suite to the Kind cluster
+	# we just provisioned. Without this the tests inherit whatever context
+	# the user has active in ~/.kube/config (e.g. a remote prod cluster),
+	# and `make deploy` lands the operator there instead of in Kind —
+	# pods come up ImagePullBackOff because the kind-loaded image is
+	# obviously not visible from a different cluster.
+	@TMP_KUBECONFIG="$$(mktemp)" && \
+		$(KIND) get kubeconfig --name $(KIND_CLUSTER) > "$$TMP_KUBECONFIG" && \
+		KUBECONFIG="$$TMP_KUBECONFIG" KIND_CLUSTER=$(KIND_CLUSTER) \
+			go test ./test/e2e/ -v -ginkgo.v ; \
+		ec=$$? ; rm -f "$$TMP_KUBECONFIG" ; \
+		exit $$ec
 	$(MAKE) cleanup-test-e2e
 
 .PHONY: cleanup-test-e2e
