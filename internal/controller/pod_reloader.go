@@ -156,12 +156,11 @@ func stdoutPreview(s string) string {
 
 // parseHashHeader extracts the sha256 from the first non-empty line of s
 // when it has the form "# hash: <sha256>". Tolerates leading blank lines,
-// CR characters and surrounding whitespace. Returns "" if no recognizable
-// header line is found within the first few lines.
+// CR characters and surrounding whitespace. Returns "" if the first
+// non-empty line is not a recognizable header.
 func parseHashHeader(s string) string {
 	const prefix = "# hash:"
-	for i, line := range strings.SplitN(s, "\n", 8) {
-		_ = i
+	for _, line := range strings.SplitN(s, "\n", 8) {
 		line = strings.TrimRight(line, "\r")
 		line = strings.TrimSpace(line)
 		if line == "" {
@@ -170,8 +169,7 @@ func parseHashHeader(s string) string {
 		if strings.HasPrefix(line, prefix) {
 			return strings.TrimSpace(strings.TrimPrefix(line, prefix))
 		}
-		// First non-empty line wasn't a hash header — give up; we don't
-		// want to scan past the header zone.
+		// First non-empty line wasn't a hash header — give up.
 		return ""
 	}
 	return ""

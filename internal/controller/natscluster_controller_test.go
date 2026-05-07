@@ -33,15 +33,35 @@ import (
 	natsv1alpha1 "github.com/sandstorm/NatsAuthOperator/api/v1alpha1"
 )
 
-// fakePodReloader records which pods received a SIGHUP reload call. By
-// default every pod is reported as already in-sync, so existing tests
-// exercise the SIGHUP path without per-pod hash setup. Add a pod's
-// "namespace/name" to stalePods to simulate kubelet-sync lag (the pod will
-// be reported as not-yet-current and SIGHUP will be skipped for it).
+// fakePodReloader records SIGHUP calls and answers IsConfigCurrent.
+//
+// Two answering modes — pick one per test:
+//
+//  1. Stub mode (default): if cmReader is nil, IsConfigCurrent uses a
+//     synthetic header matching expectedHash (or a non-matching one when
+//     the pod is in stalePods). This is the lightweight path used by
+//     existing tests that don't care about the read pipeline.
+//
+//  2. End-to-end mode: when cmReader is non-nil, IsConfigCurrent reads the
+//     actual ConfigMap the controller wrote, pulls the "auth.conf" key,
+//     and runs the *real* parseHashHeader on it before comparing to
+//     expectedHash. This exercises the full write→mount→read→parse loop
+//     and catches drift between FormatHashHeader/parseHashHeader, missing
+//     headers, encoding glitches, etc. — the real-world bug class that
+//     the stub mode cannot see.
+//
+//     stalePods still works in this mode: a pod listed there receives
+//     pinned old content (simulating kubelet not yet synced) instead of
+//     the freshly-written ConfigMap data.
 type fakePodReloader struct {
 	reloadedPods []string
 	err          error
 	stalePods    map[string]bool
+
+	// E2E mode wiring. Set both to enable.
+	cmReader    client.Client
+	cmName      types.NamespacedName
+	stalePinned string // returned for pods in stalePods when cmReader is set
 }
 
 func (f *fakePodReloader) ReloadPod(_ context.Context, namespace, podName string) error {
@@ -49,8 +69,27 @@ func (f *fakePodReloader) ReloadPod(_ context.Context, namespace, podName string
 	return f.err
 }
 
-func (f *fakePodReloader) IsConfigCurrent(_ context.Context, namespace, podName, _ string) (bool, error) {
-	return !f.stalePods[namespace+"/"+podName], nil
+func (f *fakePodReloader) IsConfigCurrent(ctx context.Context, namespace, podName, expectedHash string) (bool, error) {
+	key := namespace + "/" + podName
+	if f.cmReader != nil {
+		// End-to-end mode: read the real ConfigMap and parse its actual content.
+		var content string
+		if f.stalePods[key] {
+			content = f.stalePinned
+		} else {
+			cm := &corev1.ConfigMap{}
+			if err := f.cmReader.Get(ctx, f.cmName, cm); err != nil {
+				return false, err
+			}
+			content = cm.Data["auth.conf"]
+		}
+		return parseHashHeader(content) == expectedHash, nil
+	}
+	// Stub mode.
+	if f.stalePods[key] {
+		return false, nil
+	}
+	return true, nil
 }
 
 func ptr[T any](v T) *T { return &v }
@@ -1728,12 +1767,12 @@ var _ = Describe("NatsCluster Controller", func() {
 
 			// Check user debug command has kubectl prefix
 			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: debugUserName, Namespace: clusterNs}, user)).To(Succeed())
-			Expect(user.Status.DebugCommand).To(HavePrefix("kubectl exec -it deploy/natsoperator-controller-manager -n nats-system -- nats-debug user-connections"))
+			Expect(user.Status.DebugCommand).To(HavePrefix("kubectl exec -it deploy/natsoperator-controller-manager -n nats-system -- \\\n  /nats-debug user-connections"))
 			Expect(user.Status.DebugCommand).To(ContainSubstring("--cluster " + debugClusterName))
 
 			// Check account debug command has kubectl prefix
 			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: debugAccountName, Namespace: clusterNs}, account)).To(Succeed())
-			Expect(account.Status.DebugCommand).To(HavePrefix("kubectl exec -it deploy/natsoperator-controller-manager -n nats-system -- nats-debug account-connections"))
+			Expect(account.Status.DebugCommand).To(HavePrefix("kubectl exec -it deploy/natsoperator-controller-manager -n nats-system -- \\\n  /nats-debug account-connections"))
 			Expect(account.Status.DebugCommand).To(ContainSubstring("--account " + debugAccountName))
 
 			// Cleanup
@@ -1805,7 +1844,7 @@ var _ = Describe("NatsCluster Controller", func() {
 
 			// Check account debug command is bare (no kubectl prefix)
 			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: debugAccountName, Namespace: clusterNs}, account)).To(Succeed())
-			Expect(account.Status.DebugCommand).To(HavePrefix("nats-debug account-connections"))
+			Expect(account.Status.DebugCommand).To(HavePrefix("/nats-debug account-connections"))
 
 			// Cleanup
 			Expect(k8sClient.Delete(ctx, account)).To(Succeed())

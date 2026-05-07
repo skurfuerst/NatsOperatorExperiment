@@ -326,7 +326,7 @@ func (r *NatsClusterReconciler) reconcileAccountsAndUsers(
 
 			// Set debug command and user Ready condition
 			if cluster.Spec.ServerRef != nil {
-				user.Status.DebugCommand = r.buildDebugCommand(fmt.Sprintf("nats-debug user-connections --cluster %s --namespace %s --nkey %s", cluster.Name, cluster.Namespace, publicKey))
+				user.Status.DebugCommand = r.buildDebugCommand(fmt.Sprintf("/nats-debug user-connections \\\n  --cluster %s --namespace %s --nkey %s", cluster.Name, cluster.Namespace, publicKey))
 			}
 			if condErr := r.setUserCondition(ctx, user, metav1.ConditionTrue, natsv1alpha1.ReasonReconciled, "User reconciled successfully"); condErr != nil {
 				statusUpdateFailed = true
@@ -347,7 +347,7 @@ func (r *NatsClusterReconciler) reconcileAccountsAndUsers(
 		// Update account status
 		acct.Status.UserCount = len(usersWithKeys)
 		if cluster.Spec.ServerRef != nil {
-			acct.Status.DebugCommand = r.buildDebugCommand(fmt.Sprintf("nats-debug account-connections --cluster %s --namespace %s --account %s", cluster.Name, cluster.Namespace, acct.Name))
+			acct.Status.DebugCommand = r.buildDebugCommand(fmt.Sprintf("/nats-debug account-connections \\\n  --cluster %s --namespace %s --account %s", cluster.Name, cluster.Namespace, acct.Name))
 		}
 		if condErr := r.setAccountCondition(ctx, acct, metav1.ConditionTrue, natsv1alpha1.ReasonReconciled, "Account reconciled successfully"); condErr != nil {
 			statusUpdateFailed = true
@@ -555,7 +555,7 @@ func (r *NatsClusterReconciler) setUserCondition(ctx context.Context, user *nats
 // if the operator's own deployment identity is known.
 func (r *NatsClusterReconciler) buildDebugCommand(bareCmd string) string {
 	if r.OperatorDeploymentName != "" && r.OperatorNamespace != "" {
-		return fmt.Sprintf("kubectl exec -it deploy/%s -n %s -- %s", r.OperatorDeploymentName, r.OperatorNamespace, bareCmd)
+		return fmt.Sprintf("kubectl exec -it deploy/%s -n %s -- \\\n  %s", r.OperatorDeploymentName, r.OperatorNamespace, bareCmd)
 	}
 	return bareCmd
 }

@@ -157,6 +157,8 @@ spec:
 | `spec.permissions.subscribe.allow` | `[]string` | Subjects the user may subscribe to. |
 | `spec.permissions.subscribe.deny` | `[]string` | Subjects denied for subscribing. |
 | `spec.permissions.allowResponses` | `ResponsePermission` | Enables request-reply response permissions. If set with no fields: `allow_responses: true`. If `maxMsgs`/`ttl` set: structured form. |
+| `spec.inboxPrefix` | `string` | Optional. Override the auto-generated inbox prefix (e.g. `_INBOX_myapp`). Has no effect when `insecureSharedInboxPrefix: true`. The NATS client must be configured with the same prefix via `nats.CustomInboxPrefix(...)`. See [Inbox Isolation](#inbox-isolation-request-reply-security). |
+| `spec.insecureSharedInboxPrefix` | `bool` | Disables per-user inbox isolation. Default `false`. Set to `true` only if all users in the account are trusted; otherwise any user with `subscribe: _INBOX.>` could intercept request-reply responses meant for others. |
 | `status.nkeyPublicKey` | `string` | The user's NKey public key (starts with `U`). |
 | `status.secretRef.name` | `string` | Name of the Secret containing the NKey seed and public key. |
 
@@ -247,6 +249,64 @@ spec:
 ```
 
 Use `allowResponses: {}` for the simple boolean form (`allow_responses: true`), or specify `maxMsgs` and/or `ttl` for the structured form.
+
+### Inbox Isolation (Request-Reply Security)
+
+NATS request-reply uses a reply-to subject (the "inbox"). By default the NATS client picks `_INBOX.<rand>`. In a multi-user account that creates a leak: any user permitted to `subscribe: ["_INBOX.>"]` (or a wildcard like `">"`) can receive replies meant for **other** users in the same account.
+
+In nkey/config-file mode the NATS server has **no** `resp_prefix` claim (that exists only in JWT mode), so the operator enforces inbox isolation through subscribe permissions instead.
+
+**Default behaviour (secure).** For every NatsUser the operator:
+
+1. Generates a unique random prefix (e.g. `_I_AMOO3GPLDOA666XY`) and stores it in the user's Secret under key `inbox-prefix`.
+2. Injects into the user's subscribe permissions:
+   - `allow: ["<prefix>.>"]` — the user's exclusive inbox space.
+   - `deny:  ["_INBOX.>"]` — blocks listening on the default inbox space, even if the user has a wildcard allow like `">"`.
+
+The deny on `_INBOX.>` takes precedence over any allow, so a user with `subscribe.allow: [">"]` still cannot see messages on `_INBOX.*`. Resulting config:
+
+```
+users = [
+  {
+    nkey: UABC...
+    permissions {
+      publish   { allow: [">"] }
+      subscribe {
+        allow: [">", "_I_AMOO3GPLDOA666XY.>"]   # user's exclusive inbox
+        deny:  ["_INBOX.>"]                      # blocks shared inbox even under ">"
+      }
+      allow_responses { max: 100, ttl: "5m" }
+    }
+  }
+]
+```
+
+**Client-side requirement.** The client must use the same prefix, otherwise its `nats.Request(...)` calls will try to subscribe to `_INBOX.*` and be denied:
+
+```yaml
+env:
+  - name: NATS_INBOX_PREFIX
+    valueFrom:
+      secretKeyRef:
+        name: myapp-nats-nkey
+        key: inbox-prefix
+```
+
+```go
+nc, err := nats.Connect(natsURL,
+    nats.Nkey(publicKey, signingCallback),
+    nats.CustomInboxPrefix(os.Getenv("NATS_INBOX_PREFIX")),
+)
+```
+
+```bash
+nats --inbox-prefix "$NATS_INBOX_PREFIX" request myapp.hello "world"
+```
+
+**Override knobs.**
+
+- `spec.inboxPrefix: "_INBOX_myapp"` — use a stable, human-readable prefix instead of the auto-generated one.
+- `spec.insecureSharedInboxPrefix: true` — opt out of isolation entirely. Only safe when every user in the account is trusted; otherwise anyone with `subscribe: _INBOX.>` can intercept replies.
 
 ### Mounting the ConfigMap in NATS
 
@@ -367,6 +427,7 @@ kubectl get secret app-user-nats-nkey -o jsonpath='{.data.nkey-seed}' | base64 -
 |-----|-------------|
 | `nkey-public` | Public key (starts with `U`). Embedded in the auth config. |
 | `nkey-seed` | Private seed (starts with `SU`). Used by NATS clients to authenticate. |
+| `inbox-prefix` | Auto-generated unique inbox prefix (e.g. `_I_ABCDE3FG`). Pass to `nats.CustomInboxPrefix(...)` on the client. Absent only when `insecureSharedInboxPrefix: true`. See [Inbox Isolation](#inbox-isolation-request-reply-security). |
 
 The Secret is owned by the NatsUser resource and is garbage-collected when the user is deleted. Seeds are generated once and never regenerated on subsequent reconciliations.
 
@@ -419,6 +480,33 @@ make build         # Build operator binary
 Always run `make generate && make manifests` after modifying CRD types in `api/v1alpha1/`.
 
 Go is managed via mise (`.mise.toml`). operator-sdk v1.42.2 is installed at `/usr/local/bin/operator-sdk`.
+
+### Running e2e tests locally (macOS + OrbStack)
+
+The e2e suite (`test/e2e/`) spins up a real Kind cluster, deploys the operator, deploys an actual `nats-server` pod, and verifies the full lifecycle (create NatsUser → real NATS login succeeds; delete NatsUser → real NATS login fails). It runs in CI via `.github/workflows/ci.yml`, but you can also run it locally against [OrbStack](https://orbstack.dev/) on macOS:
+
+```bash
+# 1. Install + start OrbStack — this provides the Docker daemon Kind needs.
+brew install orbstack
+open -a OrbStack
+
+# 2. Install Kind (Kind runs the e2e cluster as a Docker container).
+mise i
+
+# 3. (Optional) point Docker at OrbStack explicitly if you have other contexts.
+docker context use orbstack
+
+# 4. Run the suite. This creates a Kind cluster named
+#    "nats-auth-operator-test-e2e", builds + loads the operator image, runs
+#    the specs, then deletes the cluster.
+CERT_MANAGER_INSTALL_SKIP=true make test-e2e
+```
+
+The full run takes ~3-5 minutes. While it's running you can poke at the test cluster with `kubectl --context kind-nats-auth-operator-test-e2e ...`.
+
+If a spec fails and the cluster is still up (because `make test-e2e` aborts before `cleanup-test-e2e`), inspect the operator and NATS logs in `nats-auth-operator-system`, then tear down with `make cleanup-test-e2e`.
+
+Tip: re-running while the cluster already exists is fast — `setup-test-e2e` is a no-op when the cluster name is present, so iterating on a single spec only pays the image build + load cost.
 
 ## Status Conditions
 
