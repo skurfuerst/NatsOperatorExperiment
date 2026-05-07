@@ -829,6 +829,84 @@ var _ = Describe("NatsCluster Controller", func() {
 			Expect(k8sClient.Delete(ctx, deploy)).To(Succeed())
 		})
 
+		It("should reload once per operator process even when config is unchanged", func() {
+			deploy := &appsv1.Deployment{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "nats-server",
+					Namespace: clusterNs,
+				},
+				Spec: appsv1.DeploymentSpec{
+					Selector: &metav1.LabelSelector{
+						MatchLabels: map[string]string{"app": "nats"},
+					},
+					Template: corev1.PodTemplateSpec{
+						ObjectMeta: metav1.ObjectMeta{
+							Labels: map[string]string{"app": "nats"},
+						},
+						Spec: corev1.PodSpec{
+							Containers: []corev1.Container{
+								{Name: "nats", Image: "nats:latest"},
+							},
+						},
+					},
+				},
+			}
+			Expect(k8sClient.Create(ctx, deploy)).To(Succeed())
+
+			pod := createRunningPod("nats-pod-0", map[string]string{"app": "nats"})
+
+			cluster := &natsv1alpha1.NatsCluster{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      clusterName,
+					Namespace: clusterNs,
+				},
+				Spec: natsv1alpha1.NatsClusterSpec{
+					ServerRef: &natsv1alpha1.WorkloadReference{
+						Kind: "Deployment",
+						Name: "nats-server",
+					},
+				},
+			}
+			Expect(k8sClient.Create(ctx, cluster)).To(Succeed())
+
+			// Single long-lived reconciler simulating one operator process.
+			r := &NatsClusterReconciler{
+				Client:      k8sClient,
+				Scheme:      k8sClient.Scheme(),
+				PodReloader: fakeReloader,
+			}
+			req := reconcile.Request{NamespacedName: types.NamespacedName{Name: clusterName, Namespace: clusterNs}}
+
+			// First reconcile: SIGHUP fires (operator just started).
+			_, err := r.Reconcile(ctx, req)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(fakeReloader.reloadedPods).To(ConsistOf(clusterNs + "/nats-pod-0"))
+
+			// Second reconcile, same process, config unchanged: no extra SIGHUP.
+			_, err = r.Reconcile(ctx, req)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(fakeReloader.reloadedPods).To(HaveLen(1))
+
+			// Simulate operator restart by building a fresh reconciler.
+			// LastConfigHash is already populated from the previous reconciles,
+			// so the hash gate alone would skip the reload — the per-process
+			// gate must force a SIGHUP anyway.
+			r2 := &NatsClusterReconciler{
+				Client:      k8sClient,
+				Scheme:      k8sClient.Scheme(),
+				PodReloader: fakeReloader,
+			}
+			_, err = r2.Reconcile(ctx, req)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(fakeReloader.reloadedPods).To(HaveLen(2))
+			Expect(fakeReloader.reloadedPods[1]).To(Equal(clusterNs + "/nats-pod-0"))
+
+			// Cleanup
+			Expect(k8sClient.Delete(ctx, pod)).To(Succeed())
+			Expect(k8sClient.Delete(ctx, cluster)).To(Succeed())
+			Expect(k8sClient.Delete(ctx, deploy)).To(Succeed())
+		})
+
 		It("should not fail when serverRef is nil", func() {
 			cluster := &natsv1alpha1.NatsCluster{
 				ObjectMeta: metav1.ObjectMeta{
