@@ -130,39 +130,70 @@ func (r *NatsClusterReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 		return ctrl.Result{}, err
 	}
 
-	// 5. Generate NATS config
+	// 5. Generate NATS config and prepend a "# hash: <sha256>" header so
+	// the operator can later read just the first line of the file mounted
+	// inside each NATS pod and tell whether the kubelet has finished
+	// syncing the latest ConfigMap. The hash is computed over the body
+	// (without the header) so it is stable regardless of header content.
 	cfg := natsconfig.ConvertToNatsConfig(accountsWithUsers)
-	configStr := natsconfig.Generate(cfg)
+	configBody := natsconfig.Generate(cfg)
+	hash := fmt.Sprintf("%x", sha256.Sum256([]byte(configBody)))
+	configStr := FormatHashHeader(hash) + configBody
 
-	// 6. Compute hash and create/update ConfigMap
-	hash := fmt.Sprintf("%x", sha256.Sum256([]byte(configStr)))
-	if err := r.ensureConfigMap(ctx, cluster, configStr); err != nil {
+	// 6. Create/update ConfigMap
+	if _, err := r.ensureConfigMap(ctx, cluster, configStr); err != nil {
 		_ = r.setClusterCondition(ctx, cluster, metav1.ConditionFalse, natsv1alpha1.ReasonReconcileError, err.Error())
 		return ctrl.Result{}, err
 	}
 
-	// 7. Send SIGHUP to NATS pods if config changed, or if this operator
-	// process has not yet reloaded this cluster (forces one reload per
-	// cluster after every operator restart, just to be sure).
+	// 7. Decide whether a reload pass is needed and, if so, attempt it.
+	//
+	// A reload pass is needed when EITHER:
+	//   - the rendered config differs from the last-known-good hash
+	//     (something actually changed), OR
+	//   - this operator process has not yet reloaded this cluster — force
+	//     exactly one SIGHUP per cluster after every operator restart, so a
+	//     fresh operator pod always re-syncs the running NATS server even
+	//     if Status.LastConfigHash already matches.
+	//
+	// reloadNatsPods only SIGHUPs pods whose mounted auth.conf already
+	// shows the expected hash; pods still on the previous content are
+	// reported back as "not in sync" so we can requeue and retry once
+	// kubelet has finished syncing the ConfigMap volume.
+	//
+	// When no reload pass runs, the cluster is already at the desired
+	// state by definition (hash matches and we've reloaded once this
+	// process), so we treat it as in-sync and let the status update below
+	// be a no-op.
 	reloadKey := req.NamespacedName
 	_, alreadyReloaded := r.reloadedOnce.Load(reloadKey)
 	configChanged := hash != cluster.Status.LastConfigHash
-	if cluster.Spec.ServerRef != nil && (configChanged || !alreadyReloaded) {
-		if err := r.reloadNatsPods(ctx, cluster); err != nil {
+	needsReloadAttempt := cluster.Spec.ServerRef != nil && (configChanged || !alreadyReloaded)
+
+	allPodsInSync := true
+	if needsReloadAttempt {
+		inSync, err := r.reloadNatsPods(ctx, cluster, hash)
+		if err != nil {
 			log.Error(err, "failed to reload NATS pods")
 			_ = r.setClusterCondition(ctx, cluster, metav1.ConditionFalse, natsv1alpha1.ReasonReconcileError,
 				fmt.Sprintf("failed to reload NATS pods: %v", err))
 			return ctrl.Result{}, err
 		}
+		allPodsInSync = inSync
 		r.reloadedOnce.Store(reloadKey, struct{}{})
-		log.Info("sent SIGHUP to NATS pods for config reload",
-			"configChanged", configChanged, "operatorRestart", !alreadyReloaded)
+		log.Info("reload pass complete",
+			"configChanged", configChanged, "operatorRestart", !alreadyReloaded, "allPodsInSync", inSync)
 	}
 
-	// 8. Update cluster status
+	// 8. Update cluster status. Only advance LastConfigHash once every
+	// running pod is confirmed to have the new content on disk; otherwise
+	// the next reconcile must repeat the SIGHUP (against the now-synced
+	// volume).
 	cluster.Status.AccountCount = len(matchingAccounts)
 	cluster.Status.UserCount = totalUsers
-	cluster.Status.LastConfigHash = hash
+	if allPodsInSync {
+		cluster.Status.LastConfigHash = hash
+	}
 	meta.SetStatusCondition(&cluster.Status.Conditions, metav1.Condition{
 		Type:               natsv1alpha1.ConditionReady,
 		Status:             metav1.ConditionTrue,
@@ -171,6 +202,15 @@ func (r *NatsClusterReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 		ObservedGeneration: cluster.Generation,
 	})
 	if err := r.Status().Update(ctx, cluster); err != nil {
+		// Cache lag between back-to-back reconciles can leave us with a stale
+		// resourceVersion and produce a 409 Conflict here. That's harmless —
+		// the next reconcile (auto-enqueued by the watch) will read fresh
+		// state and write status correctly. Soft-requeue instead of bubbling
+		// the error so it doesn't clutter logs as ERROR.
+		if errors.IsConflict(err) {
+			log.Info("status update conflict, requeueing", "reason", err.Error())
+			return ctrl.Result{Requeue: true}, nil
+		}
 		return ctrl.Result{}, err
 	}
 
@@ -178,6 +218,15 @@ func (r *NatsClusterReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 	// We use RequeueAfter instead of returning an error to avoid rate-limiting the workqueue.
 	if statusUpdateFailed {
 		log.Info("requeuing due to failed status updates on accounts/users")
+		return ctrl.Result{RequeueAfter: 5 * time.Second}, nil
+	}
+
+	// If any pod was still showing a stale hash, requeue to re-check after
+	// the kubelet has had a chance to sync the volume. We retry quickly
+	// because the cost of one more exec is negligible compared to leaving
+	// pods on the wrong config.
+	if !allPodsInSync {
+		log.Info("some pods still showing stale config hash; requeueing")
 		return ctrl.Result{RequeueAfter: 5 * time.Second}, nil
 	}
 
@@ -324,7 +373,10 @@ func (r *NatsClusterReconciler) userReferencesAccount(user *natsv1alpha1.NatsUse
 }
 
 // ensureConfigMap creates or updates the NATS auth ConfigMap.
-func (r *NatsClusterReconciler) ensureConfigMap(ctx context.Context, cluster *natsv1alpha1.NatsCluster, configStr string) error {
+// Returns the controllerutil.OperationResult so the caller can detect whether
+// a Create/Update actually happened (vs. a no-op) and decide whether to wait
+// for kubelet to sync the new content into mounted volumes.
+func (r *NatsClusterReconciler) ensureConfigMap(ctx context.Context, cluster *natsv1alpha1.NatsCluster, configStr string) (controllerutil.OperationResult, error) {
 	log := logf.FromContext(ctx)
 	configMapName := cluster.Name + "-nats-config"
 	cm := &corev1.ConfigMap{
@@ -341,17 +393,58 @@ func (r *NatsClusterReconciler) ensureConfigMap(ctx context.Context, cluster *na
 		return controllerutil.SetControllerReference(cluster, cm, r.Scheme)
 	})
 	if err != nil {
-		return err
+		return result, err
 	}
 	if result != controllerutil.OperationResultNone {
 		log.Info("ConfigMap updated", "name", configMapName, "operation", result)
 	}
-	return nil
+	return result, nil
 }
 
-// reloadNatsPods sends SIGHUP to all Running pods of the referenced workload,
-// triggering the NATS server to reload its configuration without restarting.
-func (r *NatsClusterReconciler) reloadNatsPods(ctx context.Context, cluster *natsv1alpha1.NatsCluster) error {
+// configSyncTimeout bounds how long a single reconcile will wait for one
+// pod's mounted ConfigMap to catch up to the expected hash before giving
+// up and requeuing. Kubelet refreshes mounted ConfigMaps on a polling
+// cadence (default ~60-90s), so this short in-reconcile wait only catches
+// the common case where sync happens within a few seconds; longer lags
+// are handled by the controller-level requeue.
+const (
+	configSyncTimeout = 5 * time.Second
+	configSyncPoll    = 500 * time.Millisecond
+)
+
+// waitForCurrentConfig polls IsConfigCurrent on a pod for up to
+// configSyncTimeout, returning true as soon as the pod reports the expected
+// hash. Errors from the underlying check are returned immediately.
+func (r *NatsClusterReconciler) waitForCurrentConfig(ctx context.Context, namespace, podName, expectedHash string) (bool, error) {
+	deadline := time.Now().Add(configSyncTimeout)
+	for {
+		current, err := r.PodReloader.IsConfigCurrent(ctx, namespace, podName, expectedHash)
+		if err != nil {
+			return false, err
+		}
+		if current {
+			return true, nil
+		}
+		if time.Now().After(deadline) {
+			return false, nil
+		}
+		select {
+		case <-ctx.Done():
+			return false, ctx.Err()
+		case <-time.After(configSyncPoll):
+		}
+	}
+}
+
+// reloadNatsPods checks each Running pod's mounted auth.conf hash header and
+// sends SIGHUP only to pods whose mounted file already matches expectedHash.
+// Pods still showing an older hash are counted as "stale" and skipped (no
+// SIGHUP) so we do not reload them onto the wrong content.
+//
+// Returns allInSync = true when every Running pod was confirmed at expectedHash
+// (whether SIGHUP succeeded for it or not — see per-pod errors). When false,
+// the caller should requeue and try again after kubelet has had time to sync.
+func (r *NatsClusterReconciler) reloadNatsPods(ctx context.Context, cluster *natsv1alpha1.NatsCluster, expectedHash string) (bool, error) {
 	log := logf.FromContext(ctx)
 	ref := cluster.Spec.ServerRef
 	key := types.NamespacedName{Name: ref.Name, Namespace: cluster.Namespace}
@@ -361,41 +454,55 @@ func (r *NatsClusterReconciler) reloadNatsPods(ctx context.Context, cluster *nat
 	case "Deployment":
 		deploy := &appsv1.Deployment{}
 		if err := r.Get(ctx, key, deploy); err != nil {
-			return fmt.Errorf("getting deployment %s: %w", key, err)
+			return false, fmt.Errorf("getting deployment %s: %w", key, err)
 		}
 		podSelector = deploy.Spec.Selector
 	case "StatefulSet":
 		sts := &appsv1.StatefulSet{}
 		if err := r.Get(ctx, key, sts); err != nil {
-			return fmt.Errorf("getting statefulset %s: %w", key, err)
+			return false, fmt.Errorf("getting statefulset %s: %w", key, err)
 		}
 		podSelector = sts.Spec.Selector
 	default:
-		return fmt.Errorf("unsupported workload kind: %s", ref.Kind)
+		return false, fmt.Errorf("unsupported workload kind: %s", ref.Kind)
 	}
 
 	selector, err := metav1.LabelSelectorAsSelector(podSelector)
 	if err != nil {
-		return fmt.Errorf("parsing label selector: %w", err)
+		return false, fmt.Errorf("parsing label selector: %w", err)
 	}
 
 	podList := &corev1.PodList{}
 	if err := r.List(ctx, podList, client.InNamespace(cluster.Namespace), client.MatchingLabelsSelector{Selector: selector}); err != nil {
-		return fmt.Errorf("listing pods: %w", err)
+		return false, fmt.Errorf("listing pods: %w", err)
 	}
 
+	allInSync := true
 	for i := range podList.Items {
 		pod := &podList.Items[i]
 		if pod.Status.Phase != corev1.PodRunning {
 			log.Info("skipping non-running pod", "pod", pod.Name, "phase", pod.Status.Phase)
+			// Non-Running pods can't be confirmed in-sync; another reconcile
+			// will fire when they transition (or we'll find them next time).
+			allInSync = false
+			continue
+		}
+		current, err := r.waitForCurrentConfig(ctx, cluster.Namespace, pod.Name, expectedHash)
+		if err != nil {
+			return false, fmt.Errorf("checking config hash on pod %s: %w", pod.Name, err)
+		}
+		if !current {
+			log.Info("pod has stale config on disk after short retry, skipping SIGHUP",
+				"pod", pod.Name, "expectedHash", expectedHash)
+			allInSync = false
 			continue
 		}
 		if err := r.PodReloader.ReloadPod(ctx, cluster.Namespace, pod.Name); err != nil {
-			return fmt.Errorf("reloading pod %s: %w", pod.Name, err)
+			return false, fmt.Errorf("reloading pod %s: %w", pod.Name, err)
 		}
-		log.Info("sent SIGHUP to pod", "pod", pod.Name)
+		log.Info("sent SIGHUP to pod", "pod", pod.Name, "hash", expectedHash)
 	}
-	return nil
+	return allInSync, nil
 }
 
 //nolint:unparam // status kept as parameter for consistency with setAccountCondition/setUserCondition

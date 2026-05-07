@@ -33,15 +33,24 @@ import (
 	natsv1alpha1 "github.com/sandstorm/NatsAuthOperator/api/v1alpha1"
 )
 
-// fakePodReloader records which pods received a SIGHUP reload call.
+// fakePodReloader records which pods received a SIGHUP reload call. By
+// default every pod is reported as already in-sync, so existing tests
+// exercise the SIGHUP path without per-pod hash setup. Add a pod's
+// "namespace/name" to stalePods to simulate kubelet-sync lag (the pod will
+// be reported as not-yet-current and SIGHUP will be skipped for it).
 type fakePodReloader struct {
 	reloadedPods []string
 	err          error
+	stalePods    map[string]bool
 }
 
 func (f *fakePodReloader) ReloadPod(_ context.Context, namespace, podName string) error {
 	f.reloadedPods = append(f.reloadedPods, namespace+"/"+podName)
 	return f.err
+}
+
+func (f *fakePodReloader) IsConfigCurrent(_ context.Context, namespace, podName, _ string) (bool, error) {
+	return !f.stalePods[namespace+"/"+podName], nil
 }
 
 func ptr[T any](v T) *T { return &v }
@@ -900,6 +909,85 @@ var _ = Describe("NatsCluster Controller", func() {
 			Expect(err).NotTo(HaveOccurred())
 			Expect(fakeReloader.reloadedPods).To(HaveLen(2))
 			Expect(fakeReloader.reloadedPods[1]).To(Equal(clusterNs + "/nats-pod-0"))
+
+			// Cleanup
+			Expect(k8sClient.Delete(ctx, pod)).To(Succeed())
+			Expect(k8sClient.Delete(ctx, cluster)).To(Succeed())
+			Expect(k8sClient.Delete(ctx, deploy)).To(Succeed())
+		})
+
+		It("should skip SIGHUP for pods whose mounted ConfigMap is still stale, then SIGHUP after sync", func() {
+			deploy := &appsv1.Deployment{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "nats-server",
+					Namespace: clusterNs,
+				},
+				Spec: appsv1.DeploymentSpec{
+					Selector: &metav1.LabelSelector{
+						MatchLabels: map[string]string{"app": "nats"},
+					},
+					Template: corev1.PodTemplateSpec{
+						ObjectMeta: metav1.ObjectMeta{
+							Labels: map[string]string{"app": "nats"},
+						},
+						Spec: corev1.PodSpec{
+							Containers: []corev1.Container{
+								{Name: "nats", Image: "nats:latest"},
+							},
+						},
+					},
+				},
+			}
+			Expect(k8sClient.Create(ctx, deploy)).To(Succeed())
+
+			pod := createRunningPod("nats-pod-0", map[string]string{"app": "nats"})
+
+			cluster := &natsv1alpha1.NatsCluster{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      clusterName,
+					Namespace: clusterNs,
+				},
+				Spec: natsv1alpha1.NatsClusterSpec{
+					ServerRef: &natsv1alpha1.WorkloadReference{
+						Kind: "Deployment",
+						Name: "nats-server",
+					},
+				},
+			}
+			Expect(k8sClient.Create(ctx, cluster)).To(Succeed())
+
+			// Mark the pod as stale to simulate kubelet not having synced
+			// the new ConfigMap into the volume yet.
+			fakeReloader.stalePods = map[string]bool{clusterNs + "/nats-pod-0": true}
+
+			r := &NatsClusterReconciler{
+				Client:      k8sClient,
+				Scheme:      k8sClient.Scheme(),
+				PodReloader: fakeReloader,
+			}
+			req := reconcile.Request{NamespacedName: types.NamespacedName{Name: clusterName, Namespace: clusterNs}}
+
+			// First reconcile: pod is stale → SIGHUP must NOT be sent;
+			// reconcile must request a quick requeue and must NOT advance
+			// LastConfigHash.
+			res, err := r.Reconcile(ctx, req)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(fakeReloader.reloadedPods).To(BeEmpty())
+			Expect(res.RequeueAfter).To(BeNumerically(">", 0))
+
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: clusterName, Namespace: clusterNs}, cluster)).To(Succeed())
+			Expect(cluster.Status.LastConfigHash).To(BeEmpty())
+
+			// Now simulate kubelet finishing the volume sync — pod is no
+			// longer stale. Next reconcile must SIGHUP and advance status.
+			delete(fakeReloader.stalePods, clusterNs+"/nats-pod-0")
+			res, err = r.Reconcile(ctx, req)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(fakeReloader.reloadedPods).To(ConsistOf(clusterNs + "/nats-pod-0"))
+			Expect(res.RequeueAfter).To(BeZero())
+
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: clusterName, Namespace: clusterNs}, cluster)).To(Succeed())
+			Expect(cluster.Status.LastConfigHash).NotTo(BeEmpty())
 
 			// Cleanup
 			Expect(k8sClient.Delete(ctx, pod)).To(Succeed())
