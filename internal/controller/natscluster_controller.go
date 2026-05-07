@@ -21,6 +21,7 @@ import (
 	"crypto/sha256"
 	"fmt"
 	"sort"
+	"sync"
 	"time"
 
 	appsv1 "k8s.io/api/apps/v1"
@@ -55,6 +56,11 @@ type NatsClusterReconciler struct {
 
 	ruleEvaluator *UserRuleEvaluator
 	nkeyManager   *NKeySecretManager
+
+	// reloadedOnce tracks clusters that have been SIGHUP'd at least once by
+	// this operator process. Resets on operator restart, forcing one reload
+	// per cluster after every restart regardless of LastConfigHash.
+	reloadedOnce sync.Map
 }
 
 func (r *NatsClusterReconciler) getUserRuleEvaluator() *UserRuleEvaluator {
@@ -135,15 +141,22 @@ func (r *NatsClusterReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 		return ctrl.Result{}, err
 	}
 
-	// 7. Send SIGHUP to NATS pods if config changed
-	if hash != cluster.Status.LastConfigHash && cluster.Spec.ServerRef != nil {
+	// 7. Send SIGHUP to NATS pods if config changed, or if this operator
+	// process has not yet reloaded this cluster (forces one reload per
+	// cluster after every operator restart, just to be sure).
+	reloadKey := req.NamespacedName
+	_, alreadyReloaded := r.reloadedOnce.Load(reloadKey)
+	configChanged := hash != cluster.Status.LastConfigHash
+	if cluster.Spec.ServerRef != nil && (configChanged || !alreadyReloaded) {
 		if err := r.reloadNatsPods(ctx, cluster); err != nil {
 			log.Error(err, "failed to reload NATS pods")
 			_ = r.setClusterCondition(ctx, cluster, metav1.ConditionFalse, natsv1alpha1.ReasonReconcileError,
 				fmt.Sprintf("failed to reload NATS pods: %v", err))
 			return ctrl.Result{}, err
 		}
-		log.Info("sent SIGHUP to NATS pods for config reload")
+		r.reloadedOnce.Store(reloadKey, struct{}{})
+		log.Info("sent SIGHUP to NATS pods for config reload",
+			"configChanged", configChanged, "operatorRestart", !alreadyReloaded)
 	}
 
 	// 8. Update cluster status
