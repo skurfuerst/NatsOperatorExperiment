@@ -7,34 +7,11 @@ rules:
 - apiGroups:
   - ""
   resources:
-  - configmaps
-  verbs:
-  - create
-  - get
-  - list
-  - update
-  - watch
-- apiGroups:
-  - ""
-  resources:
   - namespaces
   verbs:
   - get
   - list
   - watch
-- apiGroups:
-  - ""
-  resources:
-  - pods
-  verbs:
-  - get
-  - list
-- apiGroups:
-  - ""
-  resources:
-  - pods/exec
-  verbs:
-  - create
 - apiGroups:
   - ""
   resources:

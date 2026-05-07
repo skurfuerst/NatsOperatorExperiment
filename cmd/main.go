@@ -188,10 +188,12 @@ func main() {
 		cacheOpts.ByObject = map[client.Object]cache.ByObject{
 			&appsv1.StatefulSet{}: {Namespaces: map[string]cache.Config{opNs: {}}},
 			&appsv1.Deployment{}:  {Namespaces: map[string]cache.Config{opNs: {}}},
+			&corev1.Pod{}:         {Namespaces: map[string]cache.Config{opNs: {}}},
+			&corev1.ConfigMap{}:   {Namespaces: map[string]cache.Config{opNs: {}}},
 		}
-		setupLog.Info("scoping StatefulSet/Deployment cache to operator namespace", "namespace", opNs)
+		setupLog.Info("scoping StatefulSet/Deployment/Pod/ConfigMap cache to operator namespace", "namespace", opNs)
 	} else {
-		setupLog.Info("POD_NAMESPACE not set; using cluster-scoped cache for StatefulSet/Deployment")
+		setupLog.Info("POD_NAMESPACE not set; using cluster-scoped cache for StatefulSet/Deployment/Pod/ConfigMap")
 	}
 
 	mgr, err := ctrl.NewManager(ctrl.GetConfigOrDie(), ctrl.Options{

@@ -83,12 +83,13 @@ func (r *NatsClusterReconciler) getNKeySecretManager() *NKeySecretManager {
 // +kubebuilder:rbac:groups=nats.k8s.sandstorm.de,resources=natsaccounts/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=nats.k8s.sandstorm.de,resources=natsusers,verbs=get;list;watch
 // +kubebuilder:rbac:groups=nats.k8s.sandstorm.de,resources=natsusers/status,verbs=get;update;patch
-// +kubebuilder:rbac:groups="",resources=configmaps,verbs=get;list;watch;create;update
+// configmaps permissions live in the namespaced Role
+// (config/rbac/role_namespaced.yaml) bound only in the operator namespace.
 // +kubebuilder:rbac:groups="",resources=secrets,verbs=get;create;update
 // apps/{deployments,statefulsets,replicasets} permissions live in a namespaced
 // Role (config/rbac/role_namespaced.yaml) bound only in the operator namespace.
-// +kubebuilder:rbac:groups="",resources=pods,verbs=get;list
-// +kubebuilder:rbac:groups="",resources=pods/exec,verbs=create
+// pods + pods/exec permissions live in the namespaced Role
+// (config/rbac/role_namespaced.yaml) bound only in the operator namespace.
 // +kubebuilder:rbac:groups="",resources=namespaces,verbs=get;list;watch
 
 func (r *NatsClusterReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
