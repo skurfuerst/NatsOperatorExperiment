@@ -433,8 +433,11 @@ func TestGenerateUserWithInboxPrefixSubscribeRules(t *testing.T) {
 func TestGenerateSentinelWhenNoUsers_EmptyConfig(t *testing.T) {
 	cfg := &NatsConfig{Accounts: map[string]AccountConfig{}}
 	result := Generate(cfg)
-	if !strings.Contains(result, "$G") {
-		t.Error("expected $G sentinel account when no users provisioned")
+	if !strings.Contains(result, "authorization {") {
+		t.Error("expected top-level authorization block when no users provisioned")
+	}
+	if strings.Contains(result, "$G {") || strings.Contains(result, "\"$G\"") {
+		t.Errorf("must NOT emit $G as a named account (NATS reserves it):\n%s", result)
 	}
 	if !strings.Contains(result, "deny-all sentinel") {
 		t.Error("expected explanatory comment about the sentinel")
@@ -456,8 +459,11 @@ func TestGenerateSentinelWhenNoUsers_AccountsButZeroUsers(t *testing.T) {
 		},
 	}
 	result := Generate(cfg)
-	if !strings.Contains(result, "$G") {
-		t.Error("expected $G sentinel even when accounts exist but have no users")
+	if !strings.Contains(result, "authorization {") {
+		t.Error("expected top-level authorization block sentinel even when accounts exist but have no users")
+	}
+	if strings.Contains(result, "$G {") || strings.Contains(result, "\"$G\"") {
+		t.Errorf("must NOT emit $G as a named account (NATS reserves it):\n%s", result)
 	}
 	if !strings.Contains(result, "sandstorm") {
 		t.Error("expected real account to still be present")
@@ -479,8 +485,8 @@ func TestGenerateNoSentinelWhenAtLeastOneUserExists(t *testing.T) {
 		},
 	}
 	result := Generate(cfg)
-	if strings.Contains(result, "$G") {
-		t.Error("must NOT inject sentinel when real users exist")
+	if strings.Contains(result, "authorization {") {
+		t.Error("must NOT inject sentinel authorization block when real users exist")
 	}
 	if strings.Contains(result, "deny-all sentinel") {
 		t.Error("must NOT include sentinel comment when real users exist")

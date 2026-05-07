@@ -16,10 +16,15 @@ const sentinelNKey = "UCIDQZZKASESVE5OOIFA3HJAQNSHYMUOSFPKY4FTDKMWNVIO4JW4Q5Q6"
 // Generate produces a NATS server auth configuration string from the given config.
 //
 // Safe-by-default: if no users are provisioned in any account, a deny-all
-// sentinel user is injected into the global $G account. Without this, NATS
-// would treat the configuration as "no auth required" and route anonymous
-// clients to $G with full access. The sentinel is stable across calls so
-// it does not cause reconcile churn.
+// sentinel user is emitted at the top level (implicitly in the global $G
+// account). Without this, NATS would treat the configuration as "no auth
+// required" and route anonymous clients to $G with full access. The sentinel
+// nkey is stable across calls so it does not cause reconcile churn.
+//
+// Note: NATS reserves the literal account name "$G", so the sentinel user
+// MUST be emitted via a top-level authorization {} block rather than as an
+// "$G" entry inside the accounts {} block — the latter is rejected by NATS
+// with "$G is a Reserved Account".
 func Generate(cfg *NatsConfig) string {
 	var b strings.Builder
 
@@ -28,9 +33,9 @@ func Generate(cfg *NatsConfig) string {
 	accounts := cfg.Accounts
 	if totalUsers(accounts) == 0 {
 		b.WriteString("# WARNING: no NatsUser resources defined. Emitting deny-all sentinel\n")
-		b.WriteString("# in $G to force NATS to require authentication. Provision NatsUser\n")
-		b.WriteString("# resources to enable real client access.\n")
-		accounts = withSentinelAccount(accounts)
+		b.WriteString("# user (implicitly in $G) to force NATS to require authentication.\n")
+		b.WriteString("# Provision NatsUser resources to enable real client access.\n")
+		writeSentinelAuthorization(&b)
 	}
 
 	b.WriteString("accounts {\n")
@@ -61,26 +66,22 @@ func totalUsers(accounts map[string]AccountConfig) int {
 	return n
 }
 
-// withSentinelAccount returns a copy of accounts with a $G entry containing
-// the deny-all sentinel user. The input map is not modified.
-func withSentinelAccount(accounts map[string]AccountConfig) map[string]AccountConfig {
-	out := make(map[string]AccountConfig, len(accounts)+1)
-	for k, v := range accounts {
-		out[k] = v
-	}
+// writeSentinelAuthorization emits a top-level authorization {} block with a
+// single deny-all user. NATS implicitly places top-level users in the global
+// $G account, which avoids the "$G is a Reserved Account" error that occurs
+// when $G is named explicitly inside accounts {}.
+func writeSentinelAuthorization(b *strings.Builder) {
 	denyAll := []string{">"}
-	out["$G"] = AccountConfig{
-		Users: []UserConfig{
-			{
-				NKey: sentinelNKey,
-				Permissions: &PermissionsConfig{
-					Publish:   &PermissionRuleConfig{Deny: denyAll},
-					Subscribe: &PermissionRuleConfig{Deny: denyAll},
-				},
-			},
+	user := UserConfig{
+		NKey: sentinelNKey,
+		Permissions: &PermissionsConfig{
+			Publish:   &PermissionRuleConfig{Deny: denyAll},
+			Subscribe: &PermissionRuleConfig{Deny: denyAll},
 		},
 	}
-	return out
+	b.WriteString("authorization {\n")
+	writeUsers(b, []UserConfig{user}, 1)
+	b.WriteString("}\n")
 }
 
 func writeAccount(b *strings.Builder, name string, acct *AccountConfig, indent int) {
