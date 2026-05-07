@@ -85,8 +85,8 @@ func (r *NatsClusterReconciler) getNKeySecretManager() *NKeySecretManager {
 // +kubebuilder:rbac:groups=nats.k8s.sandstorm.de,resources=natsusers/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups="",resources=configmaps,verbs=get;list;watch;create;update
 // +kubebuilder:rbac:groups="",resources=secrets,verbs=get;create;update
-// +kubebuilder:rbac:groups=apps,resources=deployments,verbs=get
-// +kubebuilder:rbac:groups=apps,resources=statefulsets,verbs=get
+// apps/{deployments,statefulsets,replicasets} permissions live in a namespaced
+// Role (config/rbac/role_namespaced.yaml) bound only in the operator namespace.
 // +kubebuilder:rbac:groups="",resources=pods,verbs=get;list
 // +kubebuilder:rbac:groups="",resources=pods/exec,verbs=create
 // +kubebuilder:rbac:groups="",resources=namespaces,verbs=get;list;watch

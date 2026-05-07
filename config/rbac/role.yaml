@@ -44,13 +44,6 @@ rules:
   - get
   - update
 - apiGroups:
-  - apps
-  resources:
-  - deployments
-  - statefulsets
-  verbs:
-  - get
-- apiGroups:
   - nats.k8s.sandstorm.de
   resources:
   - natsaccounts

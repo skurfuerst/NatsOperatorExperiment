@@ -27,11 +27,13 @@ import (
 	// to ensure that exec-entrypoint and run can make use of them.
 	_ "k8s.io/client-go/plugin/pkg/client/auth"
 
+	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/cache"
 	"sigs.k8s.io/controller-runtime/pkg/certwatcher"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/healthz"
@@ -181,6 +183,17 @@ func main() {
 		})
 	}
 
+	cacheOpts := cache.Options{}
+	if opNs := os.Getenv("POD_NAMESPACE"); opNs != "" {
+		cacheOpts.ByObject = map[client.Object]cache.ByObject{
+			&appsv1.StatefulSet{}: {Namespaces: map[string]cache.Config{opNs: {}}},
+			&appsv1.Deployment{}:  {Namespaces: map[string]cache.Config{opNs: {}}},
+		}
+		setupLog.Info("scoping StatefulSet/Deployment cache to operator namespace", "namespace", opNs)
+	} else {
+		setupLog.Info("POD_NAMESPACE not set; using cluster-scoped cache for StatefulSet/Deployment")
+	}
+
 	mgr, err := ctrl.NewManager(ctrl.GetConfigOrDie(), ctrl.Options{
 		Scheme:                 scheme,
 		Metrics:                metricsServerOptions,
@@ -188,6 +201,7 @@ func main() {
 		HealthProbeBindAddress: probeAddr,
 		LeaderElection:         enableLeaderElection,
 		LeaderElectionID:       "6645ddfc.k8s.sandstorm.de",
+		Cache:                  cacheOpts,
 		// Disable caching for Secrets so the operator does not need cluster-wide
 		// list/watch RBAC on secrets. Secret reads go directly to the API server.
 		Client: client.Options{
