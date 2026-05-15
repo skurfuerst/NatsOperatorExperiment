@@ -1622,12 +1622,16 @@ var _ = Describe("NatsCluster Controller", func() {
 			}, secret)).To(Succeed())
 			Expect(secret.Data).NotTo(HaveKey("inbox-prefix"))
 
-			// Generated config must NOT contain any _INBOX deny rule
+			// Generated config must NOT contain any _INBOX deny rule, but
+			// must still contain the secure-by-default deny-all (publish/subscribe
+			// "deny: [\">\"]") because no permissions were declared.
 			cm := &corev1.ConfigMap{}
 			Expect(k8sClient.Get(ctx, types.NamespacedName{
 				Name: configMapName, Namespace: clusterNs,
 			}, cm)).To(Succeed())
-			Expect(cm.Data["auth.conf"]).NotTo(ContainSubstring("deny"))
+			conf := cm.Data["auth.conf"]
+			Expect(conf).NotTo(ContainSubstring(`"_INBOX.>"`))
+			Expect(conf).To(ContainSubstring(`deny: [">"]`))
 		})
 	})
 

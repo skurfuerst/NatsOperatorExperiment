@@ -171,8 +171,16 @@ func TestConvertToNatsConfigWithUsers(t *testing.T) {
 	if u2.NKey != "UUSER456" {
 		t.Errorf("expected UUSER456, got %s", u2.NKey)
 	}
-	if u2.Permissions != nil {
-		t.Error("expected nil permissions on user 2")
+	// Deny-by-default: a user with no spec.permissions still gets explicit
+	// deny-all on both directions so NATS denies all access.
+	if u2.Permissions == nil {
+		t.Fatal("expected non-nil permissions (deny-all) on user 2")
+	}
+	if !containsString(u2.Permissions.Publish.Deny, ">") {
+		t.Errorf("expected publish.deny to contain \">\", got %+v", u2.Permissions.Publish)
+	}
+	if !containsString(u2.Permissions.Subscribe.Deny, ">") {
+		t.Errorf("expected subscribe.deny to contain \">\", got %+v", u2.Permissions.Subscribe)
 	}
 }
 
@@ -299,6 +307,147 @@ func TestConvertInboxPrefixNoDuplicateIfAlreadySet(t *testing.T) {
 	}
 	if denyCount != 1 {
 		t.Errorf("expected exactly 1 _INBOX.> in deny, got %d", denyCount)
+	}
+}
+
+// TestConvertUserWithNoPermissionsAndSharedInboxPrefixDeniesAllExplicitly guards
+// against a footgun: a NatsUser that omits spec.permissions and opts into
+// insecureSharedInboxPrefix (so no operator-generated InboxPrefix) must NOT
+// receive full account access. Instead, the converter must emit an explicit
+// deny-all on both publish and subscribe.
+func TestConvertUserWithNoPermissionsAndSharedInboxPrefixDeniesAllExplicitly(t *testing.T) {
+	accounts := []AccountWithUsers{
+		{
+			Account: natsv1alpha1.NatsAccount{ObjectMeta: metav1.ObjectMeta{Name: "acct"}},
+			Users: []UserWithPublicKey{
+				{
+					User: natsv1alpha1.NatsUser{
+						Spec: natsv1alpha1.NatsUserSpec{
+							InsecureSharedInboxPrefix: true,
+							// Permissions intentionally nil
+						},
+					},
+					PublicKey:   "UNOPERMS",
+					InboxPrefix: "",
+				},
+			},
+		},
+	}
+
+	cfg := ConvertToNatsConfig(accounts)
+	uc := cfg.Accounts["acct"].Users[0]
+	if uc.Permissions == nil {
+		t.Fatal("expected non-nil Permissions even without spec.permissions")
+	}
+	if uc.Permissions.Publish == nil || !containsString(uc.Permissions.Publish.Deny, ">") {
+		t.Errorf("expected publish.deny to contain \">\", got %+v", uc.Permissions.Publish)
+	}
+	if uc.Permissions.Subscribe == nil || !containsString(uc.Permissions.Subscribe.Deny, ">") {
+		t.Errorf("expected subscribe.deny to contain \">\", got %+v", uc.Permissions.Subscribe)
+	}
+}
+
+// TestConvertUserWithOnlyPublishGetsExplicitSubscribeDeny verifies that when
+// a user declares only one direction (publish), the other direction (subscribe)
+// is filled in with an explicit deny-all.
+func TestConvertUserWithOnlyPublishGetsExplicitSubscribeDeny(t *testing.T) {
+	accounts := []AccountWithUsers{
+		{
+			Account: natsv1alpha1.NatsAccount{ObjectMeta: metav1.ObjectMeta{Name: "acct"}},
+			Users: []UserWithPublicKey{
+				{
+					User: natsv1alpha1.NatsUser{
+						Spec: natsv1alpha1.NatsUserSpec{
+							InsecureSharedInboxPrefix: true,
+							Permissions: &natsv1alpha1.Permissions{
+								Publish: &natsv1alpha1.PermissionRule{Allow: []string{"events.>"}},
+							},
+						},
+					},
+					PublicKey: "UPUBONLY",
+				},
+			},
+		},
+	}
+
+	cfg := ConvertToNatsConfig(accounts)
+	uc := cfg.Accounts["acct"].Users[0]
+	if uc.Permissions == nil {
+		t.Fatal("expected non-nil Permissions")
+	}
+	if !containsString(uc.Permissions.Publish.Allow, "events.>") {
+		t.Error("expected publish.allow to keep events.>")
+	}
+	if uc.Permissions.Subscribe == nil || !containsString(uc.Permissions.Subscribe.Deny, ">") {
+		t.Errorf("expected subscribe.deny to contain \">\", got %+v", uc.Permissions.Subscribe)
+	}
+}
+
+// TestConvertUserWithExplicitAllowsNotContaminatedByDefaultDeny ensures that
+// when both publish and subscribe have allow rules, no broad ">" deny is
+// auto-injected on either direction.
+func TestConvertUserWithExplicitAllowsNotContaminatedByDefaultDeny(t *testing.T) {
+	accounts := []AccountWithUsers{
+		{
+			Account: natsv1alpha1.NatsAccount{ObjectMeta: metav1.ObjectMeta{Name: "acct"}},
+			Users: []UserWithPublicKey{
+				{
+					User: natsv1alpha1.NatsUser{
+						Spec: natsv1alpha1.NatsUserSpec{
+							InsecureSharedInboxPrefix: true,
+							Permissions: &natsv1alpha1.Permissions{
+								Publish:   &natsv1alpha1.PermissionRule{Allow: []string{"foo.>"}},
+								Subscribe: &natsv1alpha1.PermissionRule{Allow: []string{"bar.>"}},
+							},
+						},
+					},
+					PublicKey: "UALLOWS",
+				},
+			},
+		},
+	}
+
+	cfg := ConvertToNatsConfig(accounts)
+	uc := cfg.Accounts["acct"].Users[0]
+	if containsString(uc.Permissions.Publish.Deny, ">") {
+		t.Errorf("publish.deny must not contain broad \">\", got %+v", uc.Permissions.Publish.Deny)
+	}
+	if containsString(uc.Permissions.Subscribe.Deny, ">") {
+		t.Errorf("subscribe.deny must not contain broad \">\", got %+v", uc.Permissions.Subscribe.Deny)
+	}
+}
+
+// TestConvertUserWithInboxPrefixDoesNotInjectBroadSubscribeDeny ensures that
+// when the operator allocates an inbox prefix (insecureSharedInboxPrefix=false),
+// subscribe gets the per-user inbox allow + _INBOX.> deny, but NOT a broad ">" deny.
+func TestConvertUserWithInboxPrefixDoesNotInjectBroadSubscribeDeny(t *testing.T) {
+	accounts := []AccountWithUsers{
+		{
+			Account: natsv1alpha1.NatsAccount{ObjectMeta: metav1.ObjectMeta{Name: "acct"}},
+			Users: []UserWithPublicKey{
+				{
+					User:        natsv1alpha1.NatsUser{},
+					PublicKey:   "UINBOX",
+					InboxPrefix: "_I_abc",
+				},
+			},
+		},
+	}
+
+	cfg := ConvertToNatsConfig(accounts)
+	uc := cfg.Accounts["acct"].Users[0]
+	if uc.Permissions == nil || uc.Permissions.Subscribe == nil {
+		t.Fatal("expected subscribe permissions from inbox prefix injection")
+	}
+	if !containsString(uc.Permissions.Subscribe.Allow, "_I_abc.>") {
+		t.Error("expected subscribe.allow to contain per-user inbox prefix")
+	}
+	if containsString(uc.Permissions.Subscribe.Deny, ">") {
+		t.Errorf("subscribe.deny must not contain broad \">\" when inbox allow is present, got %+v", uc.Permissions.Subscribe.Deny)
+	}
+	// Publish still has no allow, so it must be deny-all.
+	if uc.Permissions.Publish == nil || !containsString(uc.Permissions.Publish.Deny, ">") {
+		t.Errorf("expected publish.deny to contain \">\" when no publish.allow set, got %+v", uc.Permissions.Publish)
 	}
 }
 

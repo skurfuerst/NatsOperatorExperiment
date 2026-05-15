@@ -190,6 +190,38 @@ func TestGenerateUserWithPermissions(t *testing.T) {
 	}
 }
 
+// TestGenerateRenderedConfigContainsExplicitDenyForUserWithoutPermissions
+// renders the NATS server config string and verifies that a user with no
+// permissions and no inbox prefix ends up with explicit publish/subscribe
+// deny-all rules in the output (not relying on NATS's implicit deny).
+func TestGenerateRenderedConfigContainsExplicitDenyForUserWithoutPermissions(t *testing.T) {
+	cfg := &NatsConfig{
+		Accounts: map[string]AccountConfig{
+			"acct": {
+				Users: []UserConfig{
+					{
+						NKey: "UNOPERMS",
+						Permissions: &PermissionsConfig{
+							Publish:   &PermissionRuleConfig{Deny: []string{">"}},
+							Subscribe: &PermissionRuleConfig{Deny: []string{">"}},
+						},
+					},
+				},
+			},
+		},
+	}
+	result := Generate(cfg)
+	if !strings.Contains(result, "publish {") {
+		t.Error("expected publish block")
+	}
+	if !strings.Contains(result, "subscribe {") {
+		t.Error("expected subscribe block")
+	}
+	if strings.Count(result, `deny: [">"]`) < 2 {
+		t.Errorf("expected explicit deny: [\">\"] on both publish and subscribe, got:\n%s", result)
+	}
+}
+
 func TestGenerateMultipleAccounts(t *testing.T) {
 	cfg := &NatsConfig{
 		Accounts: map[string]AccountConfig{

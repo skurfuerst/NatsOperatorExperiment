@@ -41,10 +41,8 @@ func ConvertToNatsConfig(accounts []AccountWithUsers) *NatsConfig {
 
 		for _, uwk := range awu.Users {
 			userCfg := UserConfig{
-				NKey: uwk.PublicKey,
-			}
-			if uwk.User.Spec.Permissions != nil || uwk.InboxPrefix != "" {
-				userCfg.Permissions = convertPermissions(uwk.User.Spec.Permissions, uwk.InboxPrefix)
+				NKey:        uwk.PublicKey,
+				Permissions: convertPermissions(uwk.User.Spec.Permissions, uwk.InboxPrefix),
 			}
 			acctCfg.Users = append(acctCfg.Users, userCfg)
 		}
@@ -112,6 +110,26 @@ func convertPermissions(p *natsv1alpha1.Permissions, inboxPrefix string) *Permis
 	}
 	if inboxPrefix != "" {
 		c.Subscribe = injectInboxPrefix(c.Subscribe, inboxPrefix)
+	}
+	// Secure-by-default: any direction without an explicit allow rule is
+	// backfilled with deny: [">"]. Empty/missing allow lists in NATS already
+	// imply deny, but emitting an explicit deny makes the intent visible in
+	// the rendered server config and protects against future refactors.
+	if c.Publish == nil || len(c.Publish.Allow) == 0 {
+		if c.Publish == nil {
+			c.Publish = &PermissionRuleConfig{}
+		}
+		if !containsString(c.Publish.Deny, ">") {
+			c.Publish.Deny = append(c.Publish.Deny, ">")
+		}
+	}
+	if c.Subscribe == nil || len(c.Subscribe.Allow) == 0 {
+		if c.Subscribe == nil {
+			c.Subscribe = &PermissionRuleConfig{}
+		}
+		if !containsString(c.Subscribe.Deny, ">") {
+			c.Subscribe.Deny = append(c.Subscribe.Deny, ">")
+		}
 	}
 	return c
 }
