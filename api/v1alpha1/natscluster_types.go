@@ -33,6 +33,15 @@ type NatsClusterSpec struct {
 	// +optional
 	// +kubebuilder:default=8222
 	MonitoringPort *int32 `json:"monitoringPort,omitempty"`
+
+	// ExternalURLs are NATS connection URLs reachable from outside the
+	// Kubernetes cluster (e.g. via NodePort, LoadBalancer, or Ingress). They
+	// are not used by the operator itself; they are propagated to
+	// NatsUser.status.connectionURLs so external tools can discover how to
+	// connect. Each entry should be a full URL such as nats://host:4222 or
+	// tls://host:4222.
+	// +optional
+	ExternalURLs []string `json:"externalURLs,omitempty"`
 }
 
 // WorkloadReference references a Deployment or StatefulSet in the same namespace as the NatsCluster.

@@ -329,6 +329,85 @@ var _ = Describe("NatsCluster Controller", func() {
 		})
 	})
 
+	Context("NatsCluster externalURLs propagation", func() {
+		const (
+			urlClusterName = "ext-url-cluster"
+			urlAccountName = "ext-url-account"
+			urlUserName    = "ext-url-user"
+		)
+
+		It("should mirror cluster.spec.externalURLs to user.status.connectionURLs and clear when removed", func() {
+			cluster := &natsv1alpha1.NatsCluster{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      urlClusterName,
+					Namespace: clusterNs,
+				},
+				Spec: natsv1alpha1.NatsClusterSpec{
+					ExternalURLs: []string{
+						"nats://nats.example.com:4222",
+						"nats://nats-2.example.com:4222",
+					},
+				},
+			}
+			Expect(k8sClient.Create(ctx, cluster)).To(Succeed())
+
+			account := &natsv1alpha1.NatsAccount{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      urlAccountName,
+					Namespace: clusterNs,
+				},
+				Spec: natsv1alpha1.NatsAccountSpec{
+					ClusterRef: natsv1alpha1.LocalObjectReference{Name: urlClusterName},
+					UserRules: []natsv1alpha1.UserRule{
+						{Action: natsv1alpha1.UserRuleActionGrant, SameNamespace: ptr(true)},
+					},
+				},
+			}
+			Expect(k8sClient.Create(ctx, account)).To(Succeed())
+
+			user := &natsv1alpha1.NatsUser{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      urlUserName,
+					Namespace: clusterNs,
+				},
+				Spec: natsv1alpha1.NatsUserSpec{
+					AccountRef: natsv1alpha1.NamespacedObjectReference{Name: urlAccountName},
+				},
+			}
+			Expect(k8sClient.Create(ctx, user)).To(Succeed())
+
+			r := &NatsClusterReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
+			_, err := r.Reconcile(ctx, reconcile.Request{
+				NamespacedName: types.NamespacedName{Name: urlClusterName, Namespace: clusterNs},
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: urlUserName, Namespace: clusterNs}, user)).To(Succeed())
+			Expect(user.Status.ConnectionURLs).To(Equal([]string{
+				"nats://nats.example.com:4222",
+				"nats://nats-2.example.com:4222",
+			}))
+
+			// Clear externalURLs on the cluster and re-reconcile.
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: urlClusterName, Namespace: clusterNs}, cluster)).To(Succeed())
+			cluster.Spec.ExternalURLs = nil
+			Expect(k8sClient.Update(ctx, cluster)).To(Succeed())
+
+			_, err = r.Reconcile(ctx, reconcile.Request{
+				NamespacedName: types.NamespacedName{Name: urlClusterName, Namespace: clusterNs},
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: urlUserName, Namespace: clusterNs}, user)).To(Succeed())
+			Expect(user.Status.ConnectionURLs).To(BeNil())
+
+			// Cleanup
+			Expect(k8sClient.Delete(ctx, user)).To(Succeed())
+			Expect(k8sClient.Delete(ctx, account)).To(Succeed())
+			Expect(k8sClient.Delete(ctx, cluster)).To(Succeed())
+		})
+	})
+
 	Context("Cross-namespace NatsUser", func() {
 		It("should allow user from namespace matching namespaceRegex rule", func() {
 			teamNs := &corev1.Namespace{

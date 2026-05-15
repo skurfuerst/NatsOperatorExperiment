@@ -218,6 +218,15 @@ spec:
                   - type
                   type: object
                 type: array
+              connectionURLs:
+                description: |-
+                  ConnectionURLs mirrors NatsCluster.spec.externalURLs at the time of the
+                  last reconcile. External tools can read this together with the NKey
+                  seed (from SecretRef) to connect to NATS from outside the cluster.
+                  Empty if the referenced NatsCluster has no external URLs configured.
+                items:
+                  type: string
+                type: array
               debugCommand:
                 description: |-
                   DebugCommand is a full kubectl command to check this user's NATS connections.

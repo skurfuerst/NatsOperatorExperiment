@@ -328,6 +328,11 @@ func (r *NatsClusterReconciler) reconcileAccountsAndUsers(
 			if cluster.Spec.ServerRef != nil {
 				user.Status.DebugCommand = r.buildDebugCommand(fmt.Sprintf("/nats-debug user-connections \\\n  --cluster %s --namespace %s --nkey %s", cluster.Name, cluster.Namespace, publicKey))
 			}
+			if len(cluster.Spec.ExternalURLs) > 0 {
+				user.Status.ConnectionURLs = append([]string(nil), cluster.Spec.ExternalURLs...)
+			} else {
+				user.Status.ConnectionURLs = nil
+			}
 			if condErr := r.setUserCondition(ctx, user, metav1.ConditionTrue, natsv1alpha1.ReasonReconciled, "User reconciled successfully"); condErr != nil {
 				statusUpdateFailed = true
 			}

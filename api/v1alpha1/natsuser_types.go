@@ -215,6 +215,13 @@ type NatsUserStatus struct {
 	// Copy-paste it to debug connection issues.
 	// +optional
 	DebugCommand string `json:"debugCommand,omitempty"`
+
+	// ConnectionURLs mirrors NatsCluster.spec.externalURLs at the time of the
+	// last reconcile. External tools can read this together with the NKey
+	// seed (from SecretRef) to connect to NATS from outside the cluster.
+	// Empty if the referenced NatsCluster has no external URLs configured.
+	// +optional
+	ConnectionURLs []string `json:"connectionURLs,omitempty"`
 }
 
 // SecretReference references a Secret by name in the same namespace.
