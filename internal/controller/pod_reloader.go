@@ -159,18 +159,20 @@ func stdoutPreview(s string) string {
 // CR characters and surrounding whitespace. Returns "" if the first
 // non-empty line is not a recognizable header.
 func parseHashHeader(s string) string {
-	const prefix = "# hash:"
 	for _, line := range strings.SplitN(s, "\n", 8) {
 		line = strings.TrimRight(line, "\r")
 		line = strings.TrimSpace(line)
 		if line == "" {
 			continue
 		}
-		if strings.HasPrefix(line, prefix) {
-			return strings.TrimSpace(strings.TrimPrefix(line, prefix))
+		if !strings.HasPrefix(line, "#") {
+			return ""
 		}
-		// First non-empty line wasn't a hash header — give up.
-		return ""
+		rest := strings.TrimSpace(strings.TrimPrefix(line, "#"))
+		if !strings.HasPrefix(rest, "hash:") {
+			return ""
+		}
+		return strings.TrimSpace(strings.TrimPrefix(rest, "hash:"))
 	}
 	return ""
 }
