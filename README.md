@@ -191,6 +191,7 @@ spec:
 | `status.secretRef.name`            | `string`             | Name of the Secret containing the NKey seed and public key.                                                                                                                                                                                                                                |
 | `status.debugCommand`              | `string`             | Full `kubectl` command to inspect this user's live NATS connections.                                                                                                                                                                                                                       |
 | `status.connectionURLs`            | `[]string`           | Mirror of `NatsCluster.spec.externalURLs` at the last reconcile. External tools combine these URLs with the NKey seed (from `secretRef`) to connect to NATS from outside the cluster.                                                                                                      |
+| `status.isSystemAccount`           | `bool`               | `true` when this user belongs to the cluster's designated NATS System Account (an account with `spec.systemAccount: true`). External tools use this to discover which users can run `nats top` / `nats server *` / `nats account info`. Always `false` while a `SystemAccountConflict` is unresolved. |
 
 ## Installation
 

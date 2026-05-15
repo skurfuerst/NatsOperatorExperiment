@@ -222,6 +222,17 @@ type NatsUserStatus struct {
 	// Empty if the referenced NatsCluster has no external URLs configured.
 	// +optional
 	ConnectionURLs []string `json:"connectionURLs,omitempty"`
+
+	// IsSystemAccount is true when this user belongs to the NatsAccount
+	// designated as the cluster's NATS System Account (i.e. the account that
+	// won the cluster-wide spec.systemAccount=true selection). External
+	// tooling uses this flag to discover which users can run `nats top` /
+	// `nats server *` / `nats account info` against the cluster. False when
+	// the user's account is not the system account, when no account is
+	// designated, or when multiple accounts conflict
+	// (SystemAccountConflict — see condition reasons).
+	// +optional
+	IsSystemAccount bool `json:"isSystemAccount,omitempty"`
 }
 
 // SecretReference references a Secret by name in the same namespace.

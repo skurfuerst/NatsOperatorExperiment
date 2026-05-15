@@ -301,6 +301,22 @@ func (r *NatsClusterReconciler) reconcileAccountsAndUsers(
 
 	accountsWithUsers = make([]natsconfig.AccountWithUsers, 0, len(accounts))
 
+	// Determine which account (if any) is the cluster-wide System Account.
+	// We need this here so each user's status can be stamped with
+	// IsSystemAccount during the per-user pass below. A conflict (more than
+	// one account flagged) results in no designated system account; the
+	// dedicated condition is set later from cfg.SystemAccountConflicts.
+	systemAccountName := ""
+	var systemFlagged []string
+	for i := range accounts {
+		if accounts[i].Spec.SystemAccount {
+			systemFlagged = append(systemFlagged, accounts[i].Name)
+		}
+	}
+	if len(systemFlagged) == 1 {
+		systemAccountName = systemFlagged[0]
+	}
+
 	for i := range accounts {
 		acct := &accounts[i]
 
@@ -357,6 +373,7 @@ func (r *NatsClusterReconciler) reconcileAccountsAndUsers(
 			} else {
 				user.Status.ConnectionURLs = nil
 			}
+			user.Status.IsSystemAccount = systemAccountName != "" && acct.Name == systemAccountName
 			if condErr := r.setUserCondition(ctx, user, metav1.ConditionTrue, natsv1alpha1.ReasonReconciled, "User reconciled successfully"); condErr != nil {
 				statusUpdateFailed = true
 			}
