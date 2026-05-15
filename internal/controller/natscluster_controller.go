@@ -136,6 +136,30 @@ func (r *NatsClusterReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 	// syncing the latest ConfigMap. The hash is computed over the body
 	// (without the header) so it is stable regardless of header content.
 	cfg := natsconfig.ConvertToNatsConfig(accountsWithUsers)
+
+	// Surface a SystemAccountConflict condition on every account that flagged
+	// spec.systemAccount=true when more than one did so. The ConvertToNatsConfig
+	// step already withheld the system_account directive; this loop overrides
+	// the Ready=True condition the per-account reconcile path set earlier so
+	// the misconfiguration is visible via `kubectl describe natsaccount`.
+	if len(cfg.SystemAccountConflicts) > 0 {
+		conflictSet := make(map[string]struct{}, len(cfg.SystemAccountConflicts))
+		for _, n := range cfg.SystemAccountConflicts {
+			conflictSet[n] = struct{}{}
+		}
+		msg := fmt.Sprintf("multiple NatsAccounts in cluster %q have spec.systemAccount=true: %v — refusing to designate any until exactly one remains",
+			cluster.Name, cfg.SystemAccountConflicts)
+		for i := range matchingAccounts {
+			acct := &matchingAccounts[i]
+			if _, ok := conflictSet[acct.Name]; !ok {
+				continue
+			}
+			if condErr := r.setAccountCondition(ctx, acct, metav1.ConditionFalse, natsv1alpha1.ReasonSystemAccountConflict, msg); condErr != nil {
+				statusUpdateFailed = true
+			}
+		}
+	}
+
 	configBody := natsconfig.Generate(cfg)
 	hash := fmt.Sprintf("%x", sha256.Sum256([]byte(configBody)))
 	configStr := FormatHashHeader(hash) + configBody

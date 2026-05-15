@@ -138,6 +138,14 @@ spec:
                     format: int64
                     type: integer
                 type: object
+              systemAccount:
+                description: |-
+                  SystemAccount, when true, designates this account as the NATS System
+                  Account. Users in this account can subscribe to $SYS.> subjects (server
+                  events, monitoring via `nats server *`, `nats top`, `nats account info`).
+                  At most one NatsAccount per NatsCluster may set this to true; if multiple
+                  are set, the alphabetically-first one wins (deterministic).
+                type: boolean
               userRules:
                 description: |-
                   UserRules is an ordered list of rules controlling which NatsUsers can reference

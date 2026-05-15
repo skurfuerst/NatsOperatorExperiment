@@ -71,6 +71,14 @@ type NatsAccountSpec struct {
 	// Limits configures connection and resource limits for this account.
 	// +optional
 	Limits *AccountLimits `json:"limits,omitempty"`
+
+	// SystemAccount, when true, designates this account as the NATS System
+	// Account. Users in this account can subscribe to $SYS.> subjects (server
+	// events, monitoring via `nats server *`, `nats top`, `nats account info`).
+	// At most one NatsAccount per NatsCluster may set this to true; if multiple
+	// are set, the alphabetically-first one wins (deterministic).
+	// +optional
+	SystemAccount bool `json:"systemAccount,omitempty"`
 }
 
 // LocalObjectReference references a resource in the same namespace.

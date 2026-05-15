@@ -2,6 +2,18 @@ package natsconfig
 
 // NatsConfig represents the full NATS server auth configuration.
 type NatsConfig struct {
+	// SystemAccount is the name of the account designated as the NATS System
+	// Account (rendered as the top-level `system_account: <name>` directive).
+	// Empty means no system account is configured.
+	SystemAccount string
+
+	// SystemAccountConflicts holds the sorted names of all accounts that set
+	// spec.systemAccount=true when more than one did so. When this is
+	// non-empty, SystemAccount is forced to "" (no directive emitted) — the
+	// controller is expected to surface a SystemAccountConflict condition on
+	// each conflicting account so the user notices and removes the duplicate.
+	SystemAccountConflicts []string
+
 	Accounts map[string]AccountConfig
 }
 

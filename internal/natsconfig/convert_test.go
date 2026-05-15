@@ -39,6 +39,53 @@ func TestConvertToNatsConfigEmpty(t *testing.T) {
 	if len(cfg.Accounts) != 0 {
 		t.Errorf("expected 0 accounts, got %d", len(cfg.Accounts))
 	}
+	if cfg.SystemAccount != "" {
+		t.Errorf("expected empty SystemAccount, got %q", cfg.SystemAccount)
+	}
+}
+
+func TestConvertToNatsConfigSystemAccount(t *testing.T) {
+	accounts := []AccountWithUsers{
+		{Account: natsv1alpha1.NatsAccount{
+			ObjectMeta: metav1.ObjectMeta{Name: "app"},
+		}},
+		{Account: natsv1alpha1.NatsAccount{
+			ObjectMeta: metav1.ObjectMeta{Name: "SYS"},
+			Spec:       natsv1alpha1.NatsAccountSpec{SystemAccount: true},
+		}},
+	}
+	cfg := ConvertToNatsConfig(accounts)
+	if cfg.SystemAccount != "SYS" {
+		t.Errorf("expected SystemAccount=SYS, got %q", cfg.SystemAccount)
+	}
+}
+
+// If multiple accounts are flagged, refuse to designate any system account
+// and surface every candidate name (sorted) so the controller can mark each
+// one with a SystemAccountConflict condition.
+func TestConvertToNatsConfigMultipleSystemAccountsConflict(t *testing.T) {
+	accounts := []AccountWithUsers{
+		{Account: natsv1alpha1.NatsAccount{
+			ObjectMeta: metav1.ObjectMeta{Name: "zeta"},
+			Spec:       natsv1alpha1.NatsAccountSpec{SystemAccount: true},
+		}},
+		{Account: natsv1alpha1.NatsAccount{
+			ObjectMeta: metav1.ObjectMeta{Name: "alpha"},
+			Spec:       natsv1alpha1.NatsAccountSpec{SystemAccount: true},
+		}},
+		{Account: natsv1alpha1.NatsAccount{
+			ObjectMeta: metav1.ObjectMeta{Name: "regular"},
+		}},
+	}
+	cfg := ConvertToNatsConfig(accounts)
+	if cfg.SystemAccount != "" {
+		t.Errorf("expected SystemAccount cleared on conflict, got %q", cfg.SystemAccount)
+	}
+	if len(cfg.SystemAccountConflicts) != 2 ||
+		cfg.SystemAccountConflicts[0] != "alpha" ||
+		cfg.SystemAccountConflicts[1] != "zeta" {
+		t.Errorf("expected sorted conflicts [alpha, zeta], got %v", cfg.SystemAccountConflicts)
+	}
 }
 
 func TestConvertToNatsConfigWithJetStream(t *testing.T) {

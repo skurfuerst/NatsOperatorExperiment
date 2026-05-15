@@ -1,6 +1,7 @@
 # NATS Operator
 
-Kubernetes operator that manages NATS accounts and users using **nkey-based authentication** (no JWTs). Declares auth configuration via CRDs, auto-generates NKey credentials, and writes a ready-to-use NATS auth config into a ConfigMap.
+Kubernetes operator that manages NATS accounts and users using **nkey-based authentication** (no JWTs). Declares auth
+configuration via CRDs, auto-generates NKey credentials, and writes a ready-to-use NATS auth config into a ConfigMap.
 
 ## Overview
 
@@ -10,17 +11,23 @@ This operator takes a declarative approach to NATS auth management:
 2. The operator generates NKey keypairs for each user, stores them in Secrets
 3. A complete NATS `auth.conf` is rendered into a ConfigMap, ready to be mounted by your NATS server
 
-The operator does **not** deploy or manage NATS server pods. It only generates the auth configuration. You provision NATS separately (e.g., via Helm chart or StatefulSet) and mount the ConfigMap.
+The operator does **not** deploy or manage NATS server pods. It only generates the auth configuration. You provision
+NATS separately (e.g., via Helm chart or StatefulSet) and mount the ConfigMap.
 
 ### Why nkeys instead of JWTs?
 
-NKey-based auth uses a static config file (`auth.conf`) that NATS loads directly. This is simpler to operate than JWT/resolver-based auth: no account server, no resolver config, no token rotation. The tradeoff is that config changes require a NATS reload, which the operator handles automatically via the [reload mechanism](#reload-mechanism).
+NKey-based auth uses a static config file (`auth.conf`) that NATS loads directly. This is simpler to operate than
+JWT/resolver-based auth: no account server, no resolver config, no token rotation. The tradeoff is that config changes
+require a NATS reload, which the operator handles automatically via the [reload mechanism](#reload-mechanism).
 
 ## Concepts
 
-**NatsAccounts are tenants** -- think of them as isolated customers, teams, or environments. Each account gets its own subject namespace, JetStream limits, and connection quotas. Accounts cannot see each other's messages by default.
+**NatsAccounts are tenants** -- think of them as isolated customers, teams, or environments. Each account gets its own
+subject namespace, JetStream limits, and connection quotas. Accounts cannot see each other's messages by default.
 
-**NatsUsers are applications/services** within a tenant. Each microservice, worker, or API gateway that connects to NATS gets its own NatsUser with fine-grained publish/subscribe permissions. The NKey credentials (stored in a Secret) are mounted into the service's pod.
+**NatsUsers are applications/services** within a tenant. Each microservice, worker, or API gateway that connects to NATS
+gets its own NatsUser with fine-grained publish/subscribe permissions. The NKey credentials (stored in a Secret) are
+mounted into the service's pod.
 
 For example, a multi-tenant SaaS platform might look like:
 
@@ -44,13 +51,15 @@ NatsCluster "main" (namespace: nats)
         +-- NatsUser "monitoring"       <-- internal service
 ```
 
-Each account is a hard isolation boundary -- `customer-a`'s services can only see subjects within their account. A user like `api-gateway` gets permissions scoped to exactly the subjects it needs (e.g., may publish to `orders.>` but not `admin.>`).
+Each account is a hard isolation boundary -- `customer-a`'s services can only see subjects within their account. A user
+like `api-gateway` gets permissions scoped to exactly the subjects it needs (e.g., may publish to `orders.>` but not
+`admin.>`).
 
 ## Architecture
 
 - **Single controller** (`NatsClusterReconciler`) watches all 3 CRDs
 - **NatsAccount** must be in the **same namespace** as its NatsCluster
-- **NatsUser** can be in **any namespace**, gated by `allowedUserNamespaces` regex on the account
+- **NatsUser** can be in **any namespace**, gated by `userRules` (grant/deny rules) on the account
 - Config generation is deterministic (sorted by name) and idempotent
 - NKey Secrets are created in the **user's namespace**, owned by the NatsUser resource
 
@@ -58,109 +67,130 @@ Each account is a hard isolation boundary -- `customer-a`'s services can only se
 
 ### NatsCluster
 
-The cluster is the top-level grouping anchor. All accounts and their config roll up into a single ConfigMap named `{cluster-name}-nats-config`.
+The cluster is the top-level grouping anchor. All accounts and their config roll up into a single ConfigMap named
+`{cluster-name}-nats-config`.
 
 ```yaml
 apiVersion: nats.k8s.sandstorm.de/v1alpha1
 kind: NatsCluster
 metadata:
-  name: main
-  namespace: nats
+    name: main
+    namespace: nats
 spec:
-  # Optional: reference a Deployment/StatefulSet for automatic reload
-  serverRef:
-    kind: StatefulSet
-    name: nats
+    # Optional: reference a Deployment/StatefulSet for automatic reload
+    serverRef:
+        kind: StatefulSet
+        name: nats
+    monitoringPort: 8222
+    externalURLs:
+        - tls://nats.example.com:4222
 ```
 
-| Field | Type | Description |
-|-------|------|-------------|
-| `spec.serverRef` | `WorkloadReference` | Optional. References a Deployment or StatefulSet whose pods receive a SIGHUP signal on config changes, triggering a live NATS server config reload without restarting pods. Must be in the same namespace as the NatsCluster. |
-| `spec.serverRef.kind` | `string` | **Required when serverRef is set.** `Deployment` or `StatefulSet`. |
-| `spec.serverRef.name` | `string` | **Required when serverRef is set.** Name of the Deployment or StatefulSet. |
-| `status.accountCount` | `int` | Number of accounts linked to this cluster. |
-| `status.userCount` | `int` | Total users across all accounts. |
-| `status.lastConfigHash` | `string` | SHA256 of the last generated config. |
+| Field                   | Type                | Description                                                                                                                                                                                                                                          |
+|-------------------------|---------------------|------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| `spec.serverRef`        | `WorkloadReference` | Optional. References a Deployment or StatefulSet whose pods receive a SIGHUP signal on config changes, triggering a live NATS server config reload without restarting pods. Must be in the same namespace as the NatsCluster.                        |
+| `spec.serverRef.kind`   | `string`            | **Required when serverRef is set.** `Deployment` or `StatefulSet`.                                                                                                                                                                                   |
+| `spec.serverRef.name`   | `string`            | **Required when serverRef is set.** Name of the Deployment or StatefulSet.                                                                                                                                                                           |
+| `spec.monitoringPort`   | `int32`             | HTTP monitoring port on the NATS server pods. Defaults to `8222`. Used by the operator's debug helpers to query connection status.                                                                                                                   |
+| `spec.externalURLs`     | `[]string`          | NATS connection URLs reachable from outside the Kubernetes cluster (e.g. `nats://host:4222`, `tls://host:4222`). Not consumed by the operator itself — propagated to `NatsUser.status.connectionURLs` so external tools can discover how to connect. |
+| `status.accountCount`   | `int`               | Number of accounts linked to this cluster.                                                                                                                                                                                                           |
+| `status.userCount`      | `int`               | Total users across all accounts.                                                                                                                                                                                                                     |
+| `status.lastConfigHash` | `string`            | SHA256 of the last generated config.                                                                                                                                                                                                                 |
 
 ### NatsAccount
 
-An account represents a **tenant** (e.g., a customer, team, or environment). It defines the tenant's JetStream limits, connection limits, and which Kubernetes namespaces may create users belonging to this tenant.
+An account represents a **tenant** (e.g., a customer, team, or environment). It defines the tenant's JetStream limits,
+connection limits, and which Kubernetes namespaces may create users belonging to this tenant.
 
 ```yaml
 apiVersion: nats.k8s.sandstorm.de/v1alpha1
 kind: NatsAccount
 metadata:
-  name: orders
-  namespace: nats
+    name: orders
+    namespace: nats
 spec:
-  clusterRef:
-    name: main
-  allowedUserNamespaces:
-    - "^team-.*$"
-  jetstream:
-    maxMemory: "512Mi"
-    maxFile: "1Gi"
-    maxStreams: 10
-    maxConsumers: 100
-  limits:
-    maxConnections: 500
-    maxPayload: "1Mi"
+    clusterRef:
+        name: main
+    userRules:
+        -   action: grant
+            sameNamespace: true
+        -   action: grant
+            namespaceRegex: "^team-.*$"
+    jetstream:
+        maxMemory: "512Mi"
+        maxFile: "1Gi"
+        maxStreams: 10
+        maxConsumers: 100
+    limits:
+        maxConnections: 500
+        maxPayload: "1Mi"
 ```
 
-| Field | Type | Description |
-|-------|------|-------------|
-| `spec.clusterRef.name` | `string` | **Required.** Name of the NatsCluster in the same namespace. |
-| `spec.allowedUserNamespaces` | `[]string` | Regex patterns. Users in other namespaces must match at least one. Users in the same namespace as the account are always allowed. |
-| `spec.jetstream.maxMemory` | `Quantity` | JetStream memory limit (e.g., `512Mi`). |
-| `spec.jetstream.maxFile` | `Quantity` | JetStream file storage limit. |
-| `spec.jetstream.maxStreams` | `int64` | Maximum number of streams. |
-| `spec.jetstream.maxConsumers` | `int64` | Maximum number of consumers. |
-| `spec.jetstream.maxBytesRequired` | `bool` | Require max_bytes on stream creation. |
-| `spec.jetstream.memoryMaxStreamBytes` | `Quantity` | Per-stream memory limit. |
-| `spec.jetstream.diskMaxStreamBytes` | `Quantity` | Per-stream disk limit. |
-| `spec.jetstream.maxAckPending` | `int64` | Maximum pending acks. |
-| `spec.limits.maxConnections` | `int64` | Maximum client connections. |
-| `spec.limits.maxSubscriptions` | `int64` | Maximum subscriptions. |
-| `spec.limits.maxPayload` | `Quantity` | Maximum message payload size. |
-| `spec.limits.maxLeafnodes` | `int64` | Maximum leaf node connections. |
+| Field                                 | Type                | Description                                                                                                                                                                                                                                                                                                                                                                                              |
+|---------------------------------------|---------------------|----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| `spec.clusterRef.name`                | `string`            | **Required.** Name of the NatsCluster in the same namespace.                                                                                                                                                                                                                                                                                                                                             |
+| `spec.userRules`                      | `[]UserRule`        | Ordered list of grant/deny rules controlling which `NatsUser` namespaces may reference this account. Rules are evaluated in order; the first match wins. If no rule matches, access is denied.                                                                                                                                                                                                           |
+| `spec.userRules[].action`             | `enum`              | **Required.** `grant` or `deny`.                                                                                                                                                                                                                                                                                                                                                                         |
+| `spec.userRules[].sameNamespace`      | `bool`              | Matches users in the same namespace as this account. Mutually exclusive with `namespaceRegex` / `namespaceLabels`.                                                                                                                                                                                                                                                                                       |
+| `spec.userRules[].namespaceRegex`     | `string`            | Go regular expression matched against the user's namespace name.                                                                                                                                                                                                                                                                                                                                         |
+| `spec.userRules[].namespaceLabels`    | `map[string]string` | Matches namespaces whose labels contain all of these key/value pairs (equality).                                                                                                                                                                                                                                                                                                                         |
+| `spec.systemAccount`                  | `bool`              | When `true`, designates this account as the NATS System Account (rendered as the top-level `system_account: <name>` directive). Users in this account can subscribe to `$SYS.>` for server monitoring (`nats top`, `nats server *`, `nats account info`). At most one per cluster; if multiple are set, all conflicting accounts are marked `SystemAccountConflict` and no system account is configured. |
+| `spec.jetstream.maxMemory`            | `Quantity`          | JetStream memory limit (e.g., `512Mi`).                                                                                                                                                                                                                                                                                                                                                                  |
+| `spec.jetstream.maxFile`              | `Quantity`          | JetStream file storage limit.                                                                                                                                                                                                                                                                                                                                                                            |
+| `spec.jetstream.maxStreams`           | `int64`             | Maximum number of streams.                                                                                                                                                                                                                                                                                                                                                                               |
+| `spec.jetstream.maxConsumers`         | `int64`             | Maximum number of consumers.                                                                                                                                                                                                                                                                                                                                                                             |
+| `spec.jetstream.maxBytesRequired`     | `bool`              | Require max_bytes on stream creation.                                                                                                                                                                                                                                                                                                                                                                    |
+| `spec.jetstream.memoryMaxStreamBytes` | `Quantity`          | Per-stream memory limit.                                                                                                                                                                                                                                                                                                                                                                                 |
+| `spec.jetstream.diskMaxStreamBytes`   | `Quantity`          | Per-stream disk limit.                                                                                                                                                                                                                                                                                                                                                                                   |
+| `spec.jetstream.maxAckPending`        | `int64`             | Maximum pending acks.                                                                                                                                                                                                                                                                                                                                                                                    |
+| `spec.limits.maxConnections`          | `int64`             | Maximum client connections.                                                                                                                                                                                                                                                                                                                                                                              |
+| `spec.limits.maxSubscriptions`        | `int64`             | Maximum subscriptions.                                                                                                                                                                                                                                                                                                                                                                                   |
+| `spec.limits.maxPayload`              | `Quantity`          | Maximum message payload size.                                                                                                                                                                                                                                                                                                                                                                            |
+| `spec.limits.maxLeafnodes`            | `int64`             | Maximum leaf node connections.                                                                                                                                                                                                                                                                                                                                                                           |
+| `status.userCount`                    | `int`               | Number of `NatsUser` resources currently linked to this account.                                                                                                                                                                                                                                                                                                                                         |
+| `status.debugCommand`                 | `string`            | Full `kubectl` command to inspect this account's live NATS connections.                                                                                                                                                                                                                                                                                                                                  |
 
 ### NatsUser
 
-A user represents a **specific application or service** within a tenant's account. Each service that connects to NATS gets its own NatsUser with dedicated NKey credentials (stored in a Secret) and fine-grained publish/subscribe permissions.
+A user represents a **specific application or service** within a tenant's account. Each service that connects to NATS
+gets its own NatsUser with dedicated NKey credentials (stored in a Secret) and fine-grained publish/subscribe
+permissions.
 
 ```yaml
 apiVersion: nats.k8s.sandstorm.de/v1alpha1
 kind: NatsUser
 metadata:
-  name: order-service
-  namespace: nats
+    name: order-service
+    namespace: nats
 spec:
-  accountRef:
-    name: orders
-  permissions:
-    publish:
-      allow: ["orders.>", "events.>"]
-      deny: ["admin.>"]
-    subscribe:
-      allow: ["orders.replies.>"]
-    allowResponses:
-      maxMsgs: 1
-      ttl: "5m"
+    accountRef:
+        name: orders
+    permissions:
+        publish:
+            allow: [ "orders.>", "events.>" ]
+            deny: [ "admin.>" ]
+        subscribe:
+            allow: [ "orders.replies.>" ]
+        allowResponses:
+            maxMsgs: 1
+            ttl: "5m"
 ```
 
-| Field | Type | Description |
-|-------|------|-------------|
-| `spec.accountRef.name` | `string` | **Required.** Name of the NatsAccount. |
-| `spec.accountRef.namespace` | `string` | Namespace of the account. Defaults to the user's namespace. |
-| `spec.permissions.publish.allow` | `[]string` | Subjects the user may publish to. |
-| `spec.permissions.publish.deny` | `[]string` | Subjects denied for publishing (overrides allow). |
-| `spec.permissions.subscribe.allow` | `[]string` | Subjects the user may subscribe to. |
-| `spec.permissions.subscribe.deny` | `[]string` | Subjects denied for subscribing. |
-| `spec.permissions.allowResponses` | `ResponsePermission` | Enables request-reply response permissions. If set with no fields: `allow_responses: true`. If `maxMsgs`/`ttl` set: structured form. |
-| `spec.inboxPrefix` | `string` | Optional. Override the auto-generated inbox prefix (e.g. `_INBOX_myapp`). Has no effect when `insecureSharedInboxPrefix: true`. The NATS client must be configured with the same prefix via `nats.CustomInboxPrefix(...)`. See [Inbox Isolation](#inbox-isolation-request-reply-security). |
-| `spec.insecureSharedInboxPrefix` | `bool` | Disables per-user inbox isolation. Default `false`. Set to `true` only if all users in the account are trusted; otherwise any user with `subscribe: _INBOX.>` could intercept request-reply responses meant for others. |
-| `status.nkeyPublicKey` | `string` | The user's NKey public key (starts with `U`). |
-| `status.secretRef.name` | `string` | Name of the Secret containing the NKey seed and public key. |
+| Field                              | Type                 | Description                                                                                                                                                                                                                                                                                |
+|------------------------------------|----------------------|--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| `spec.accountRef.name`             | `string`             | **Required.** Name of the NatsAccount.                                                                                                                                                                                                                                                     |
+| `spec.accountRef.namespace`        | `string`             | Namespace of the account. Defaults to the user's namespace.                                                                                                                                                                                                                                |
+| `spec.permissions.publish.allow`   | `[]string`           | Subjects the user may publish to.                                                                                                                                                                                                                                                          |
+| `spec.permissions.publish.deny`    | `[]string`           | Subjects denied for publishing (overrides allow).                                                                                                                                                                                                                                          |
+| `spec.permissions.subscribe.allow` | `[]string`           | Subjects the user may subscribe to.                                                                                                                                                                                                                                                        |
+| `spec.permissions.subscribe.deny`  | `[]string`           | Subjects denied for subscribing.                                                                                                                                                                                                                                                           |
+| `spec.permissions.allowResponses`  | `ResponsePermission` | Enables request-reply response permissions. If set with no fields: `allow_responses: true`. If `maxMsgs`/`ttl` set: structured form.                                                                                                                                                       |
+| `spec.inboxPrefix`                 | `string`             | Optional. Override the auto-generated inbox prefix (e.g. `_INBOX_myapp`). Has no effect when `insecureSharedInboxPrefix: true`. The NATS client must be configured with the same prefix via `nats.CustomInboxPrefix(...)`. See [Inbox Isolation](#inbox-isolation-request-reply-security). |
+| `spec.insecureSharedInboxPrefix`   | `bool`               | Disables per-user inbox isolation. Default `false`. Set to `true` only if all users in the account are trusted; otherwise any user with `subscribe: _INBOX.>` could intercept request-reply responses meant for others.                                                                    |
+| `status.nkeyPublicKey`             | `string`             | The user's NKey public key (starts with `U`).                                                                                                                                                                                                                                              |
+| `status.secretRef.name`            | `string`             | Name of the Secret containing the NKey seed and public key.                                                                                                                                                                                                                                |
+| `status.debugCommand`              | `string`             | Full `kubectl` command to inspect this user's live NATS connections.                                                                                                                                                                                                                       |
+| `status.connectionURLs`            | `[]string`           | Mirror of `NatsCluster.spec.externalURLs` at the last reconcile. External tools combine these URLs with the NKey seed (from `secretRef`) to connect to NATS from outside the cluster.                                                                                                      |
 
 ## Installation
 
@@ -184,7 +214,8 @@ make run
 kubectl apply -f config/samples/
 ```
 
-This creates a NatsCluster `main`, NatsAccount `app-account` with JetStream limits, and NatsUser `app-user` with publish/subscribe permissions.
+This creates a NatsCluster `main`, NatsAccount `app-account` with JetStream limits, and NatsUser `app-user` with
+publish/subscribe permissions.
 
 After reconciliation, inspect the generated config:
 
@@ -194,20 +225,26 @@ kubectl get configmap main-nats-config -o jsonpath='{.data.auth\.conf}'
 
 ### Cross-Namespace Users
 
-To allow users from other namespaces, set `allowedUserNamespaces` on the account:
+To allow users from other namespaces, add `userRules` to the account. Rules are evaluated in order; the first match
+wins, and the absence of any match is an implicit deny:
 
 ```yaml
 apiVersion: nats.k8s.sandstorm.de/v1alpha1
 kind: NatsAccount
 metadata:
-  name: shared
-  namespace: nats
+    name: shared
+    namespace: nats
 spec:
-  clusterRef:
-    name: main
-  allowedUserNamespaces:
-    - "^team-.*$"      # any namespace starting with "team-"
-    - "^staging$"      # exact match
+    clusterRef:
+        name: main
+    userRules:
+        -   action: grant
+            sameNamespace: true                  # users in `nats` namespace are always OK
+        -   action: grant
+            namespaceRegex: "^team-.*$"          # any namespace starting with "team-"
+        -   action: deny
+            namespaceLabels:
+                env: untrusted                     # explicitly block namespaces with this label
 ```
 
 Then create a user in a matching namespace:
@@ -216,15 +253,16 @@ Then create a user in a matching namespace:
 apiVersion: nats.k8s.sandstorm.de/v1alpha1
 kind: NatsUser
 metadata:
-  name: worker
-  namespace: team-backend    # matches ^team-.*$
+    name: worker
+    namespace: team-backend    # matches ^team-.*$
 spec:
-  accountRef:
-    name: shared
-    namespace: nats          # explicit cross-namespace reference
+    accountRef:
+        name: shared
+        namespace: nats          # explicit cross-namespace reference
 ```
 
-The NKey Secret is created in `team-backend` (the user's namespace), while the auth config goes into the ConfigMap in `nats` (the cluster's namespace).
+The NKey Secret is created in `team-backend` (the user's namespace), while the auth config goes into the ConfigMap in
+`nats` (the cluster's namespace).
 
 ### Request-Reply with AllowResponses
 
@@ -234,36 +272,43 @@ For services that receive requests and need to publish replies:
 apiVersion: nats.k8s.sandstorm.de/v1alpha1
 kind: NatsUser
 metadata:
-  name: api-service
+    name: api-service
 spec:
-  accountRef:
-    name: app-account
-  permissions:
-    subscribe:
-      allow: ["api.requests.>"]
-    publish:
-      allow: ["_INBOX.>"]
-    allowResponses:
-      maxMsgs: 1
-      ttl: "30s"
+    accountRef:
+        name: app-account
+    permissions:
+        subscribe:
+            allow: [ "api.requests.>" ]
+        publish:
+            allow: [ "_INBOX.>" ]
+        allowResponses:
+            maxMsgs: 1
+            ttl: "30s"
 ```
 
-Use `allowResponses: {}` for the simple boolean form (`allow_responses: true`), or specify `maxMsgs` and/or `ttl` for the structured form.
+Use `allowResponses: {}` for the simple boolean form (`allow_responses: true`), or specify `maxMsgs` and/or `ttl` for
+the structured form.
 
 ### Inbox Isolation (Request-Reply Security)
 
-NATS request-reply uses a reply-to subject (the "inbox"). By default the NATS client picks `_INBOX.<rand>`. In a multi-user account that creates a leak: any user permitted to `subscribe: ["_INBOX.>"]` (or a wildcard like `">"`) can receive replies meant for **other** users in the same account.
+NATS request-reply uses a reply-to subject (the "inbox"). By default the NATS client picks `_INBOX.<rand>`. In a
+multi-user account that creates a leak: any user permitted to `subscribe: ["_INBOX.>"]` (or a wildcard like `">"`) can
+receive replies meant for **other** users in the same account.
 
-In nkey/config-file mode the NATS server has **no** `resp_prefix` claim (that exists only in JWT mode), so the operator enforces inbox isolation through subscribe permissions instead.
+In nkey/config-file mode the NATS server has **no** `resp_prefix` claim (that exists only in JWT mode), so the operator
+enforces inbox isolation through subscribe permissions instead.
 
 **Default behaviour (secure).** For every NatsUser the operator:
 
-1. Generates a unique random prefix (e.g. `_I_AMOO3GPLDOA666XY`) and stores it in the user's Secret under key `inbox-prefix`.
+1. Generates a unique random prefix (e.g. `_I_AMOO3GPLDOA666XY`) and stores it in the user's Secret under key
+   `inbox-prefix`.
 2. Injects into the user's subscribe permissions:
-   - `allow: ["<prefix>.>"]` — the user's exclusive inbox space.
-   - `deny:  ["_INBOX.>"]` — blocks listening on the default inbox space, even if the user has a wildcard allow like `">"`.
+    - `allow: ["<prefix>.>"]` — the user's exclusive inbox space.
+    - `deny:  ["_INBOX.>"]` — blocks listening on the default inbox space, even if the user has a wildcard allow like
+      `">"`.
 
-The deny on `_INBOX.>` takes precedence over any allow, so a user with `subscribe.allow: [">"]` still cannot see messages on `_INBOX.*`. Resulting config:
+The deny on `_INBOX.>` takes precedence over any allow, so a user with `subscribe.allow: [">"]` still cannot see
+messages on `_INBOX.*`. Resulting config:
 
 ```
 users = [
@@ -281,21 +326,22 @@ users = [
 ]
 ```
 
-**Client-side requirement.** The client must use the same prefix, otherwise its `nats.Request(...)` calls will try to subscribe to `_INBOX.*` and be denied:
+**Client-side requirement.** The client must use the same prefix, otherwise its `nats.Request(...)` calls will try to
+subscribe to `_INBOX.*` and be denied:
 
 ```yaml
 env:
-  - name: NATS_INBOX_PREFIX
-    valueFrom:
-      secretKeyRef:
-        name: myapp-nats-nkey
-        key: inbox-prefix
+    -   name: NATS_INBOX_PREFIX
+        valueFrom:
+            secretKeyRef:
+                name: myapp-nats-nkey
+                key: inbox-prefix
 ```
 
 ```go
 nc, err := nats.Connect(natsURL,
-    nats.Nkey(publicKey, signingCallback),
-    nats.CustomInboxPrefix(os.Getenv("NATS_INBOX_PREFIX")),
+nats.Nkey(publicKey, signingCallback),
+nats.CustomInboxPrefix(os.Getenv("NATS_INBOX_PREFIX")),
 )
 ```
 
@@ -306,7 +352,8 @@ nats --inbox-prefix "$NATS_INBOX_PREFIX" request myapp.hello "world"
 **Override knobs.**
 
 - `spec.inboxPrefix: "_INBOX_myapp"` — use a stable, human-readable prefix instead of the auto-generated one.
-- `spec.insecureSharedInboxPrefix: true` — opt out of isolation entirely. Only safe when every user in the account is trusted; otherwise anyone with `subscribe: _INBOX.>` can intercept replies.
+- `spec.insecureSharedInboxPrefix: true` — opt out of isolation entirely. Only safe when every user in the account is
+  trusted; otherwise anyone with `subscribe: _INBOX.>` can intercept replies.
 
 ### Mounting the ConfigMap in NATS
 
@@ -316,28 +363,28 @@ Add the ConfigMap as a volume in your NATS StatefulSet/Deployment and include it
 apiVersion: apps/v1
 kind: StatefulSet
 metadata:
-  name: nats
+    name: nats
 spec:
-  template:
-    spec:
-      containers:
-        - name: nats
-          image: nats:latest
-          args: ["-c", "/etc/nats/nats.conf"]
-          volumeMounts:
-            - name: config
-              mountPath: /etc/nats/nats.conf
-              subPath: nats.conf
-            - name: auth-config
-              mountPath: /etc/nats/auth.conf
-              subPath: auth.conf
-      volumes:
-        - name: config
-          configMap:
-            name: nats-config       # your main NATS config
-        - name: auth-config
-          configMap:
-            name: main-nats-config  # generated by the operator
+    template:
+        spec:
+            containers:
+                -   name: nats
+                    image: nats:latest
+                    args: [ "-c", "/etc/nats/nats.conf" ]
+                    volumeMounts:
+                        -   name: config
+                            mountPath: /etc/nats/nats.conf
+                            subPath: nats.conf
+                        -   name: auth-config
+                            mountPath: /etc/nats/auth.conf
+                            subPath: auth.conf
+            volumes:
+                -   name: config
+                    configMap:
+                        name: nats-config       # your main NATS config
+                -   name: auth-config
+                    configMap:
+                        name: main-nats-config  # generated by the operator
 ```
 
 In your main `nats.conf`, include the operator-generated file alongside your server settings:
@@ -352,7 +399,8 @@ host: "0.0.0.0"
 include ./auth.conf
 ```
 
-The operator only generates the `accounts { }` block. Everything else — networking, JetStream, clustering, TLS, monitoring — lives in your main config.
+The operator only generates the `accounts { }` block. Everything else — networking, JetStream, clustering, TLS,
+monitoring — lives in your main config.
 
 #### Minimal single-node with JetStream
 
@@ -409,7 +457,8 @@ http_port: 8222   # Prometheus metrics at /metrics, health at /healthz
 include ./auth.conf
 ```
 
-The `http_port` exposes the built-in monitoring endpoints used by the official NATS Prometheus exporter and liveness/readiness probes.
+The `http_port` exposes the built-in monitoring endpoints used by the official NATS Prometheus exporter and
+liveness/readiness probes.
 
 ## NKey Secrets
 
@@ -423,35 +472,43 @@ kubectl get secret app-user-nats-nkey -o jsonpath='{.data.nkey-seed}' | base64 -
 # SUABC123...
 ```
 
-| Key | Description |
-|-----|-------------|
-| `nkey-public` | Public key (starts with `U`). Embedded in the auth config. |
-| `nkey-seed` | Private seed (starts with `SU`). Used by NATS clients to authenticate. |
+| Key            | Description                                                                                                                                                                                                                       |
+|----------------|-----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| `nkey-public`  | Public key (starts with `U`). Embedded in the auth config.                                                                                                                                                                        |
+| `nkey-seed`    | Private seed (starts with `SU`). Used by NATS clients to authenticate.                                                                                                                                                            |
 | `inbox-prefix` | Auto-generated unique inbox prefix (e.g. `_I_ABCDE3FG`). Pass to `nats.CustomInboxPrefix(...)` on the client. Absent only when `insecureSharedInboxPrefix: true`. See [Inbox Isolation](#inbox-isolation-request-reply-security). |
 
-The Secret is owned by the NatsUser resource and is garbage-collected when the user is deleted. Seeds are generated once and never regenerated on subsequent reconciliations.
+The Secret is owned by the NatsUser resource and is garbage-collected when the user is deleted. Seeds are generated once
+and never regenerated on subsequent reconciliations.
 
 To use the seed in a NATS client, mount the Secret and pass it via the `nkey` option in your client library.
 
 ## Reload Mechanism
 
-When `spec.serverRef` is set on a NatsCluster, the operator sends a `SIGHUP` signal to every Running pod of the referenced Deployment or StatefulSet whenever the auth config changes. NATS server responds to `SIGHUP` by reloading its configuration in-place — clients stay connected and no pods are restarted.
+When `spec.serverRef` is set on a NatsCluster, the operator sends a `SIGHUP` signal to every Running pod of the
+referenced Deployment or StatefulSet whenever the auth config changes. NATS server responds to `SIGHUP` by reloading its
+configuration in-place — clients stay connected and no pods are restarted.
 
 ```yaml
 apiVersion: nats.k8s.sandstorm.de/v1alpha1
 kind: NatsCluster
 metadata:
-  name: main
-  namespace: nats
+    name: main
+    namespace: nats
 spec:
-  serverRef:
-    kind: StatefulSet    # or Deployment
-    name: nats
+    serverRef:
+        kind: StatefulSet    # or Deployment
+        name: nats
 ```
 
-The operator does this by exec-ing `kill -HUP 1` in each Running pod (NATS server is assumed to run as PID 1). Pods that are not in the `Running` phase are skipped; they will pick up the updated ConfigMap when they start. No-op reconciliations (config unchanged) leave pods untouched.
+The operator does this by exec-ing `kill -HUP 1` in each Running pod (NATS server is assumed to run as PID 1). Pods that
+are not in the `Running` phase are skipped; they will pick up the updated ConfigMap when they start. No-op
+reconciliations (config unchanged) leave pods untouched.
 
-> **Namespace requirement:** The referenced Deployment or StatefulSet must be in the **same namespace as the NatsCluster**. The generated ConfigMap (`{cluster-name}-nats-config`) is created in the cluster's namespace, and Kubernetes only allows pods to mount ConfigMaps from their own namespace. If the NATS server workload is in a different namespace, it cannot mount the auth config.
+> **Namespace requirement:** The referenced Deployment or StatefulSet must be in the **same namespace as the NatsCluster
+**. The generated ConfigMap (`{cluster-name}-nats-config`) is created in the cluster's namespace, and Kubernetes only
+> allows pods to mount ConfigMaps from their own namespace. If the NATS server workload is in a different namespace, it
+> cannot mount the auth config.
 
 ## CLI Tool
 
@@ -483,7 +540,10 @@ Go is managed via mise (`.mise.toml`). operator-sdk v1.42.2 is installed at `/us
 
 ### Running e2e tests locally (macOS + OrbStack)
 
-The e2e suite (`test/e2e/`) spins up a real Kind cluster, deploys the operator, deploys an actual `nats-server` pod, and verifies the full lifecycle (create NatsUser → real NATS login succeeds; delete NatsUser → real NATS login fails). It runs in CI via `.github/workflows/ci.yml`, but you can also run it locally against [OrbStack](https://orbstack.dev/) on macOS:
+The e2e suite (`test/e2e/`) spins up a real Kind cluster, deploys the operator, deploys an actual `nats-server` pod, and
+verifies the full lifecycle (create NatsUser → real NATS login succeeds; delete NatsUser → real NATS login fails). It
+runs in CI via `.github/workflows/ci.yml`, but you can also run it locally against [OrbStack](https://orbstack.dev/) on
+macOS:
 
 ```bash
 # 1. Install + start OrbStack — this provides the Docker daemon Kind needs.
@@ -502,27 +562,33 @@ docker context use orbstack
 CERT_MANAGER_INSTALL_SKIP=true make test-e2e
 ```
 
-The full run takes ~3-5 minutes. While it's running you can poke at the test cluster with `kubectl --context kind-nats-auth-operator-test-e2e ...`.
+The full run takes ~3-5 minutes. While it's running you can poke at the test cluster with
+`kubectl --context kind-nats-auth-operator-test-e2e ...`.
 
-If a spec fails and the cluster is still up (because `make test-e2e` aborts before `cleanup-test-e2e`), inspect the operator and NATS logs in `nats-auth-operator-system`, then tear down with `make cleanup-test-e2e`.
+If a spec fails and the cluster is still up (because `make test-e2e` aborts before `cleanup-test-e2e`), inspect the
+operator and NATS logs in `nats-auth-operator-system`, then tear down with `make cleanup-test-e2e`.
 
-Tip: re-running while the cluster already exists is fast — `setup-test-e2e` is a no-op when the cluster name is present, so iterating on a single spec only pays the image build + load cost.
+Tip: re-running while the cluster already exists is fast — `setup-test-e2e` is a no-op when the cluster name is present,
+so iterating on a single spec only pays the image build + load cost.
 
 ## Status Conditions
 
 All three CRDs report status conditions:
 
-| Condition | Status | Reason | Meaning |
-|-----------|--------|--------|---------|
-| `Ready` | `True` | `Reconciled` | Resource reconciled successfully. |
-| `Ready` | `False` | `ReconcileError` | Error during reconciliation. |
-| `Ready` | `False` | `InvalidRegex` | Account has invalid `allowedUserNamespaces` regex. |
-| `Ready` | `False` | `NamespaceNotAllowed` | User's namespace doesn't match account's `allowedUserNamespaces`. |
+| Condition | Status  | Reason                  | Meaning                                                                                                                                                                                          |
+|-----------|---------|-------------------------|--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| `Ready`   | `True`  | `Reconciled`            | Resource reconciled successfully.                                                                                                                                                                |
+| `Ready`   | `False` | `ReconcileError`        | Error during reconciliation.                                                                                                                                                                     |
+| `Ready`   | `False` | `InvalidRegex`          | A `userRules[].namespaceRegex` on the referenced account does not compile.                                                                                                                       |
+| `Ready`   | `False` | `NamespaceNotAllowed`   | The user's namespace was not granted by any rule in the account's `userRules`.                                                                                                                   |
+| `Ready`   | `False` | `NamespaceFetchError`   | The operator could not read the user's namespace (required to evaluate `namespaceLabels` rules).                                                                                                 |
+| `Ready`   | `False` | `ClusterNotFound`       | The referenced `NatsCluster` does not exist.                                                                                                                                                     |
+| `Ready`   | `False` | `AccountNotFound`       | The referenced `NatsAccount` does not exist.                                                                                                                                                     |
+| `Ready`   | `False` | `SystemAccountConflict` | More than one `NatsAccount` in this cluster has `spec.systemAccount: true`. All conflicting accounts get this condition and the cluster runs without a system account until exactly one remains. |
 
 ## Future Work
 
 - [ ] **Exports/Imports** -- cross-account service and stream sharing
 - [ ] **Subject Mappings** -- account-level subject aliasing
-- [ ] **System account** -- designating a system account on NatsCluster
 - [ ] **Account nkeys** -- if JWT mode support is ever added
 - [ ] **Webhook/admission validation** -- validating CRDs before they're persisted

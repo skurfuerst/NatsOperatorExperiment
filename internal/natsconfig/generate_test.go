@@ -538,6 +538,42 @@ func TestGenerateSentinelIsStableAcrossCalls(t *testing.T) {
 	}
 }
 
+func TestGenerateSystemAccountDirective(t *testing.T) {
+	cfg := &NatsConfig{
+		SystemAccount: "SYS",
+		Accounts: map[string]AccountConfig{
+			"SYS": {
+				Users: []UserConfig{{NKey: "USYSADMIN"}},
+			},
+			"app": {
+				Users: []UserConfig{{NKey: "UAPP1"}},
+			},
+		},
+	}
+	result := Generate(cfg)
+	if !strings.Contains(result, `system_account: "SYS"`) {
+		t.Errorf("expected top-level system_account directive, got:\n%s", result)
+	}
+	// Directive must appear BEFORE the accounts block so NATS can resolve it.
+	sysIdx := strings.Index(result, "system_account:")
+	acctIdx := strings.Index(result, "accounts {")
+	if sysIdx == -1 || acctIdx == -1 || sysIdx > acctIdx {
+		t.Errorf("system_account must come before accounts {, got:\n%s", result)
+	}
+}
+
+func TestGenerateNoSystemAccountDirectiveByDefault(t *testing.T) {
+	cfg := &NatsConfig{
+		Accounts: map[string]AccountConfig{
+			"app": {Users: []UserConfig{{NKey: "UAPP1"}}},
+		},
+	}
+	result := Generate(cfg)
+	if strings.Contains(result, "system_account:") {
+		t.Errorf("must not emit system_account when SystemAccount is empty, got:\n%s", result)
+	}
+}
+
 func TestGenerateDeterministicAccountOrder(t *testing.T) {
 	cfg := &NatsConfig{
 		Accounts: map[string]AccountConfig{

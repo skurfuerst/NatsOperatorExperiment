@@ -15,4 +15,9 @@ const (
 	ReasonAccountNotFound     = "AccountNotFound"
 	ReasonNamespaceNotAllowed = "NamespaceNotAllowed"
 	ReasonNamespaceFetchError = "NamespaceFetchError"
+	// ReasonSystemAccountConflict is set on every NatsAccount that has
+	// spec.systemAccount=true when more than one account in the same cluster
+	// is so flagged. The cluster runs without a system_account directive
+	// until exactly one remains.
+	ReasonSystemAccountConflict = "SystemAccountConflict"
 )

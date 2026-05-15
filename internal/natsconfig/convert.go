@@ -2,6 +2,7 @@ package natsconfig
 
 import (
 	"fmt"
+	"sort"
 
 	"k8s.io/apimachinery/pkg/api/resource"
 
@@ -23,9 +24,31 @@ type UserWithPublicKey struct {
 }
 
 // ConvertToNatsConfig converts CRD resources to the internal config representation.
+//
+// Exactly one NatsAccount per cluster may set spec.systemAccount=true. If
+// multiple are flagged, this is treated as a misconfiguration: no
+// system_account directive is emitted, and the conflicting account names are
+// returned in cfg.SystemAccountConflicts (sorted) so the caller can surface a
+// status condition on each of them.
 func ConvertToNatsConfig(accounts []AccountWithUsers) *NatsConfig {
 	cfg := &NatsConfig{
 		Accounts: make(map[string]AccountConfig, len(accounts)),
+	}
+
+	var systemCandidates []string
+	for _, awu := range accounts {
+		if awu.Account.Spec.SystemAccount {
+			systemCandidates = append(systemCandidates, awu.Account.Name)
+		}
+	}
+	switch len(systemCandidates) {
+	case 0:
+		// nothing to do
+	case 1:
+		cfg.SystemAccount = systemCandidates[0]
+	default:
+		sort.Strings(systemCandidates)
+		cfg.SystemAccountConflicts = systemCandidates
 	}
 
 	for _, awu := range accounts {
