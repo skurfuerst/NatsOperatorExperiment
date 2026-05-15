@@ -30,7 +30,12 @@ data:
     listen: 0.0.0.0:4222
     http: 0.0.0.0:8222
     server_name: $POD_NAME
-    include /etc/nats-config/auth/auth.conf
+    # nats-server resolves include paths relative to the parent config's
+    # directory via path.Join, which does NOT honor a leading slash on the
+    # included path. An absolute "include /etc/nats-config/auth/auth.conf"
+    # ends up being looked up at /etc/nats/etc/nats-config/auth/auth.conf
+    # and fails. Use a relative path from /etc/nats/.
+    include ../nats-config/auth/auth.conf
 ---
 apiVersion: v1
 kind: Service

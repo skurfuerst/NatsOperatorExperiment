@@ -1,0 +1,18 @@
+# Kind cluster config used by `make test-e2e`.
+#
+# The operator's user-lifecycle test exercises the SIGHUP reload path, which
+# depends on the kubelet projecting an updated ConfigMap into the mounted
+# auth.conf inside the NATS pod. Stock kubelet only re-projects on its
+# sync tick (default 60s), so a single test run takes ~90s per ConfigMap
+# update. We shorten the sync period to 5s so the e2e suite runs in
+# seconds rather than minutes. `Watch`-based change detection is already
+# the default; we set it explicitly to make intent obvious.
+kind: Cluster
+apiVersion: kind.x-k8s.io/v1alpha4
+nodes:
+  - role: control-plane
+    kubeadmConfigPatches:
+      - |
+        kind: KubeletConfiguration
+        syncFrequency: 5s
+        configMapAndSecretChangeDetectionStrategy: Watch

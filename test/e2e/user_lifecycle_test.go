@@ -112,6 +112,17 @@ var _ = Describe("User Lifecycle", Ordered, func() {
 	})
 
 	It("a NatsUser CR results in a working NATS login", func() {
+		By("capturing the pre-alice LastConfigHash so we can detect the operator's next applied change")
+		// The cluster+account were already reconciled in BeforeAll, so
+		// LastConfigHash is non-empty before alice is even created.
+		// Waiting only for "non-empty" returns instantly and the connect
+		// races the pod reload — manifesting as Authorization Violation.
+		var prevHash string
+		Eventually(func(g Gomega) {
+			prevHash = getClusterHash(g, ns, clusterName)
+			g.Expect(prevHash).NotTo(BeEmpty())
+		}, time.Minute, time.Second).Should(Succeed())
+
 		By("creating the alice NatsUser")
 		applyManifest(aliceUserManifest)
 
@@ -121,10 +132,12 @@ var _ = Describe("User Lifecycle", Ordered, func() {
 			g.Expect(err).NotTo(HaveOccurred())
 		}, 1*time.Minute, time.Second).Should(Succeed())
 
-		By("waiting for the operator to confirm the running NATS pod has the new auth config (LastConfigHash advances and stabilizes)")
+		By("waiting for the operator to confirm the running NATS pod has the new auth config (LastConfigHash advances past the pre-alice value)")
 		Eventually(func(g Gomega) {
 			hash := getClusterHash(g, ns, clusterName)
 			g.Expect(hash).NotTo(BeEmpty(), "LastConfigHash must be set once all pods are in sync")
+			g.Expect(hash).NotTo(Equal(prevHash),
+				"LastConfigHash must advance once the alice-included config is live in the pod")
 		}, 3*time.Minute, 2*time.Second).Should(Succeed())
 
 		By("connecting to NATS with alice's credentials")

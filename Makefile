@@ -117,6 +117,11 @@ test: manifests generate fmt vet setup-envtest ## Run tests.
 # CertManager is installed by default; skip with:
 # - CERT_MANAGER_INSTALL_SKIP=true
 KIND_CLUSTER ?= nats-auth-operator-test-e2e
+# Kind config tunes kubelet syncFrequency to 5s. Stock kubelet only re-
+# projects updated ConfigMaps every 60s, which dominates e2e wall time
+# (every NatsUser change has to wait a full kubelet tick). With the patch
+# the user-lifecycle spec runs in ~10s instead of ~90s.
+KIND_CONFIG ?= test/e2e/kind-config.yaml
 
 .PHONY: setup-test-e2e
 setup-test-e2e: ## Set up a Kind cluster for e2e tests if it does not exist
@@ -124,13 +129,18 @@ setup-test-e2e: ## Set up a Kind cluster for e2e tests if it does not exist
 		echo "Kind is not installed. Please install Kind manually."; \
 		exit 1; \
 	}
-	@case "$$($(KIND) get clusters)" in \
-		*"$(KIND_CLUSTER)"*) \
-			echo "Kind cluster '$(KIND_CLUSTER)' already exists. Skipping creation." ;; \
-		*) \
-			echo "Creating Kind cluster '$(KIND_CLUSTER)'..."; \
-			$(KIND) create cluster --name $(KIND_CLUSTER) ;; \
-	esac
+	@if $(KIND) get clusters 2>/dev/null | grep -qx "$(KIND_CLUSTER)"; then \
+		if $(KIND) get kubeconfig --name $(KIND_CLUSTER) >/dev/null 2>&1; then \
+			echo "Kind cluster '$(KIND_CLUSTER)' is healthy. Reusing."; \
+		else \
+			echo "Kind cluster '$(KIND_CLUSTER)' exists but is unhealthy (containers stopped?). Recreating..."; \
+			$(KIND) delete cluster --name $(KIND_CLUSTER); \
+			$(KIND) create cluster --name $(KIND_CLUSTER) --config $(KIND_CONFIG); \
+		fi; \
+	else \
+		echo "Creating Kind cluster '$(KIND_CLUSTER)'..."; \
+		$(KIND) create cluster --name $(KIND_CLUSTER) --config $(KIND_CONFIG); \
+	fi
 
 .PHONY: test-e2e
 test-e2e: setup-test-e2e manifests generate fmt vet ## Run the e2e tests. Expected an isolated environment using Kind.
@@ -142,6 +152,11 @@ test-e2e: setup-test-e2e manifests generate fmt vet ## Run the e2e tests. Expect
 	# obviously not visible from a different cluster.
 	@TMP_KUBECONFIG="$$(mktemp)" && \
 		$(KIND) get kubeconfig --name $(KIND_CLUSTER) > "$$TMP_KUBECONFIG" && \
+		ctx="$$(KUBECONFIG="$$TMP_KUBECONFIG" $(KUBECTL) config current-context)" && \
+		if [ "$$ctx" != "kind-$(KIND_CLUSTER)" ]; then \
+			echo "tmp kubeconfig points at wrong context: $$ctx (expected kind-$(KIND_CLUSTER))"; \
+			rm -f "$$TMP_KUBECONFIG"; exit 1; \
+		fi && \
 		KUBECONFIG="$$TMP_KUBECONFIG" KIND_CLUSTER=$(KIND_CLUSTER) \
 			go test ./test/e2e/ -v -ginkgo.v ; \
 		ec=$$? ; rm -f "$$TMP_KUBECONFIG" ; \
