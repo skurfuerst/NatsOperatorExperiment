@@ -107,8 +107,10 @@ var _ = Describe("User Lifecycle", Ordered, func() {
 		_, _ = utils.Run(exec.Command("kubectl", "-n", ns, "delete", "natsaccount", "lifecycle-acct", "--ignore-not-found"))
 		_, _ = utils.Run(exec.Command("kubectl", "-n", ns, "delete", "statefulset", "lifecycle-nats", "--ignore-not-found"))
 		_, _ = utils.Run(exec.Command("kubectl", "-n", ns, "delete", "service", "lifecycle-nats", "--ignore-not-found"))
-		_, _ = utils.Run(exec.Command("kubectl", "-n", ns, "delete", "configmap", "lifecycle-nats-base-config", "--ignore-not-found"))
-		_, _ = utils.Run(exec.Command("kubectl", "-n", ns, "delete", "configmap", "lifecycle-cluster-nats-config", "--ignore-not-found"))
+		_, _ = utils.Run(exec.Command("kubectl", "-n", ns, "delete", "configmap",
+			"lifecycle-nats-base-config", "--ignore-not-found"))
+		_, _ = utils.Run(exec.Command("kubectl", "-n", ns, "delete", "configmap",
+			"lifecycle-cluster-nats-config", "--ignore-not-found"))
 	})
 
 	It("a NatsUser CR results in a working NATS login", func() {
@@ -119,7 +121,7 @@ var _ = Describe("User Lifecycle", Ordered, func() {
 		// races the pod reload — manifesting as Authorization Violation.
 		var prevHash string
 		Eventually(func(g Gomega) {
-			prevHash = getClusterHash(g, ns, clusterName)
+			prevHash = getClusterHash(g)
 			g.Expect(prevHash).NotTo(BeEmpty())
 		}, time.Minute, time.Second).Should(Succeed())
 
@@ -132,9 +134,10 @@ var _ = Describe("User Lifecycle", Ordered, func() {
 			g.Expect(err).NotTo(HaveOccurred())
 		}, 1*time.Minute, time.Second).Should(Succeed())
 
-		By("waiting for the operator to confirm the running NATS pod has the new auth config (LastConfigHash advances past the pre-alice value)")
+		By("waiting for the operator to confirm the running NATS pod has the new auth config" +
+			" (LastConfigHash advances past the pre-alice value)")
 		Eventually(func(g Gomega) {
-			hash := getClusterHash(g, ns, clusterName)
+			hash := getClusterHash(g)
 			g.Expect(hash).NotTo(BeEmpty(), "LastConfigHash must be set once all pods are in sync")
 			g.Expect(hash).NotTo(Equal(prevHash),
 				"LastConfigHash must advance once the alice-included config is live in the pod")
@@ -160,7 +163,7 @@ var _ = Describe("User Lifecycle", Ordered, func() {
 		By("capturing the LastConfigHash so we can detect the operator's next applied change")
 		var prevHash string
 		Eventually(func(g Gomega) {
-			prevHash = getClusterHash(g, ns, clusterName)
+			prevHash = getClusterHash(g)
 			g.Expect(prevHash).NotTo(BeEmpty())
 		}, time.Minute, time.Second).Should(Succeed())
 
@@ -173,7 +176,7 @@ var _ = Describe("User Lifecycle", Ordered, func() {
 
 		By("waiting for the operator to render+apply the user-removed config to the running NATS pod")
 		Eventually(func(g Gomega) {
-			hash := getClusterHash(g, ns, clusterName)
+			hash := getClusterHash(g)
 			g.Expect(hash).NotTo(BeEmpty())
 			g.Expect(hash).NotTo(Equal(prevHash),
 				"LastConfigHash must advance once the user-removed config is live in the pod")
@@ -237,8 +240,8 @@ func nkeyOpt(seed []byte) nats.Option {
 // getClusterHash reads .status.lastConfigHash off the NatsCluster. Empty
 // string means the operator has not yet reported allPodsInSync — i.e. the
 // running NATS server is not (yet) confirmed to be on the latest config.
-func getClusterHash(g Gomega, ns, name string) string {
-	out, err := utils.Run(exec.Command("kubectl", "-n", ns, "get", "natscluster", name,
+func getClusterHash(g Gomega) string {
+	out, err := utils.Run(exec.Command("kubectl", "-n", operatorNamespace, "get", "natscluster", "lifecycle-cluster",
 		"-o", "jsonpath={.status.lastConfigHash}"))
 	g.Expect(err).NotTo(HaveOccurred())
 	return strings.TrimSpace(out)

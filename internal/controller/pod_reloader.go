@@ -168,11 +168,11 @@ func parseHashHeader(s string) string {
 		if !strings.HasPrefix(line, "#") {
 			return ""
 		}
-		rest := strings.TrimSpace(strings.TrimPrefix(line, "#"))
-		if !strings.HasPrefix(rest, "hash:") {
+		body := strings.TrimSpace(strings.TrimPrefix(line, "#"))
+		if !strings.HasPrefix(body, "hash:") {
 			return ""
 		}
-		return strings.TrimSpace(strings.TrimPrefix(rest, "hash:"))
+		return strings.TrimSpace(strings.TrimPrefix(body, "hash:"))
 	}
 	return ""
 }
